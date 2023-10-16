@@ -1,0 +1,3574 @@
+---
+title: "pedcancer_blood_aml_relapse"
+author: "dz"
+date: "2023-01-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+install.packages("devtools")
+require("devtools")
+
+```
+
+```{r}
+
+install.packages('tidyverse')
+install.packages('reshape2')
+install.packages('xlsx')
+install.packages('hexbin')
+install.packages('factoextra')
+install.packages('limma')
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install("limma")
+install.packages('pheatmap')
+install.packages('XML')
+BiocManager::install('DESeq2')
+BiocManager::install("org.Hs.eg.db")
+install.packages('umap')
+
+
+library('tidyverse')
+library('reshape2')
+library('xlsx')
+library('pheatmap')
+library('limma') 
+library('factoextra')
+library('XML')
+library('org.Hs.eg.db')
+library('umap')
+library('impute')
+library('ggrepel')
+
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install("impute")
+BiocManager::install("pathview")
+
+
+install.packages(pathfindR)
+library('pathfindR')
+```
+
+
+```{r}
+
+# mitocarta
+mitocarta <- read.csv("~/Documents/R/ddh/data/mitocarta.csv")
+# mitocarta genes
+mitogenes <- pull(mitocarta %>% dplyr::select(Symbol))
+# OXPHOS genes
+  oxphos_genes <- pull(mitocarta %>% filter(grepl("OXPHOS", MitoCarta3.0_MitoPathways)) %>% dplyr::select(Symbol))
+  oxphos_df <- mitocarta %>% filter(grepl("OXPHOS", MitoCarta3.0_MitoPathways)) %>% dplyr::select(Symbol, Description, MitoCarta3.0_MitoPathways)
+
+
+```
+
+```{r}
+# target clinical - cluster 6 low and int risk ?
+
+# Discovery cohort -> clinical info
+target_discovery_clinical <- read.xlsx("~/Documents/R/pedcancer/target_data/TARGET_AML_ClinicalData_Discovery_20211201.xlsx", 1)  # read first sheet
+
+target_discovery_clinical_3 <- target_discovery_clinical %>% 
+                                mutate(sample = str_replace_all(TARGET.USI, "TARGET-20-", ""))
+
+## most recent target-AML umap clustering Feb 2023
+target_umap <- readRDS("~/Documents/R/pedcancer/target_ubmi_clusters.Rds")
+
+# combine clinical and umap files
+target_clinical <- target_discovery_clinical %>%
+    mutate(id = gsub("TARGET-20-", "", TARGET.USI))
+
+target_combined <- merge(target_umap, target_clinical, by = "id") %>%
+    mutate(relapse = ifelse(First.Event == 'Relapse', 'yes', 
+                          ifelse(First.Event == "Censored", 'no',
+                                 'other')))
+
+# target relapse
+target_relapse_expression <- read.csv("~/Documents/R/pedcancer/target_relapse_expression.csv")
+
+target_relapse_clinical <- 
+  merge(target_relapse_expression, target_discovery_clinical_3, by.x = "id2", by.y = "sample")
+
+# n=29 paired dx-relapse
+tar_paired_exp <- read.csv("~/Documents/R/pedcancer/tar_paired_exp.csv")
+tar_paired_ids <- tar_paired_exp$id
+tar_paired_exp_final_long <- read.csv("~/Documents/R/pedcancer/tar_paired_exp_final_long.csv")
+
+
+```
+
+
+```{r}
+
+# target gene expression data - diagnosis and relapse samples
+
+# EXPRESSION
+# expression_tar <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/gene_expression_array/L3/TARGET_AML_GE_level3.txt", 
+                           delim = "\t")
+
+# clean data
+#relapse_exp <- expression_tar %>% 
+#  dplyr::filter(`Gene Symbol` != 'NA') %>%
+#  dplyr::select(-ID) %>% 
+#  dplyr::group_by(`Gene Symbol`) %>% 
+#  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+#  dplyr::ungroup() %>% 
+#  column_to_rownames("Gene Symbol") %>% 
+#  t() %>% 
+#  as.data.frame() %>% 
+#  rownames_to_column("id") %>%
+#  mutate(id2 = gsub("TARGET-20-", "", id),
+#         id2 = gsub("\\-.*", "", id2)) %>% 
+#      dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+#                               ifelse(grepl("-04", id), 'relapse',
+#                               'other'))) %>%
+#  filter(phase == 'diagnosis' |
+#           phase == 'relapse')
+
+# relapse_exp <- relapse_exp[, c(1, 20798, 20799, 2:20797)]
+# write.csv(relapse_exp, "~/Documents/R/pedcancer/target_relapse_expression.csv", row.names = FALSE)
+
+
+# file that was written from above code - also in startup code, above
+# target_relapse_expression <- read.csv("~/Documents/R/pedcancer/target_relapse_expression.csv")
+
+
+# pol clean data - refernces an expression df that i do not know
+#expression_tar_clean <- expression_tar %>% 
+#  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>%  # where is this expression df ?
+#  dplyr::select(-ID) %>% 
+#  dplyr::group_by(`Gene Symbol`) %>% 
+#  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+#  dplyr::ungroup() %>% 
+#  column_to_rownames("Gene Symbol") %>% 
+#  t() %>% 
+#  as.data.frame() %>% 
+#  rownames_to_column("id") %>% 
+#  filter(grepl("-09", id)) %>% # Collect only "Primary blood derived cancer – bone marrow" (code 09)
+#  mutate(id = gsub("TARGET-20-", "", id),
+#         id = gsub("\\-0.*", "", id)) %>% 
+#  dplyr::group_by(id) %>%
+#  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for each gene in sample duplicates (one duplicate)
+#  dplyr::ungroup()
+
+
+```
+
+
+```{r}
+
+# select patients with matched dx and relapse samples
+
+relapse_id2 <- pull(target_relapse_expression %>%
+  mutate(id2 = gsub("TARGET-20-", "", id),
+         id2 = gsub("\\-.*", "", id2)) %>%
+  filter(phase == 'relapse') %>%
+  dplyr::select(id2))
+
+# clean
+ids <- pull(target_relapse_expression %>%
+  filter(id2 %in% relapse_id2) %>%
+  filter(!grepl("03", id)) %>%
+  arrange(id2) %>%
+  filter(id2 != "PAMYAS",
+         id2 != "PANLIZ",
+           id2 != "PANTWV",
+           id2 != "PARBIU",
+           id2 != "PARCEV",
+           id2 != "PARGDB",
+           id2 != "PARHVK",
+           id2 != "PARIHK",
+           id2 != "PARYFN",
+           id2 != "PASBBE",
+           id2 != "PASXNR",
+           id2 != "PASYJI") %>%
+  dplyr::select(id))
+
+short_ids <- pull(target_relapse_expression %>%
+  filter(id2 %in% relapse_id2) %>%
+  filter(!grepl("03", id)) %>%
+  arrange(id2) %>%
+  filter(id2 != "PAMYAS",
+         id2 != "PANLIZ",
+           id2 != "PANTWV",
+           id2 != "PARBIU",
+           id2 != "PARCEV",
+           id2 != "PARGDB",
+           id2 != "PARHVK",
+           id2 != "PARIHK",
+           id2 != "PARYFN",
+           id2 != "PASBBE",
+           id2 != "PASXNR",
+           id2 != "PASYJI") %>%
+  dplyr::select(id2))
+
+
+
+```
+
+```{r}
+# limma for PAIRED dx and relapse patients
+
+# patient list and designation
+relapse_samples <- target_relapse_expression %>%
+  filter(id %in% ids) %>%
+  dplyr::select(id, id2, phase) %>%
+  arrange(id2)
+
+subject <- factor(relapse_samples$id2)
+phase <- factor(relapse_samples$phase)
+
+# expression matrix
+relapse_exp_mat <- as.matrix(target_relapse_expression %>%
+filter(id %in% ids) %>%
+  arrange(id2) %>%
+  dplyr::select(-phase) %>%
+  dplyr::select(-id2) %>%
+column_to_rownames('id') %>% 
+  t())
+ 
+# limma setup - for PAIRED analysis 
+  design <- model.matrix(~subject+phase)
+    fit <- lmFit(relapse_exp_mat, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  relapse_tab <- topTable(fit, sort = "none", n = Inf) %>%
+    rownames_to_column("gene_id") %>%
+    mutate(neglogP = -log(adj.P.Val))
+  
+ tar_relapse_deg <- relapse_tab %>% filter(adj.P.Val <= 0.05)
+ 
+ tar_relapse_deg <- tar_relapse_deg %>% dplyr::select(c(1, 24:29))
+ 
+ tar_relapse_deg %>% filter(phaserelapse >= 0.2276554)
+ tar_relapse_deg %>% filter(phaserelapse <= -0.2171302)
+ 
+ relapse_tab %>% ggplot(mapping = aes(x = phaserelapse, y = neglogP)) + 
+   geom_point(alpha = 0.4) +
+    theme_light() +
+  ylab("Negative Log adj-P") +
+  xlab("Normalized Expression Change: Dx to Relapse") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = 0.2276554, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = -0.2171302, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = 2.7, linetype = 'dashed', color = 'red') +
+   geom_point(data = tar_relapse_deg %>% filter(phaserelapse >= 0.2276554 | phaserelapse <= -0.2171302), mapping = aes(x = phaserelapse, y = neglogP), color = 'yellow', pch = 20)
+   
+ 
+# up in relapse with 1sd cutoff
+  tar_relapse_up <- relapse_tab %>% filter(adj.P.Val <= 0.05) %>% filter(phaserelapse >= 0.2276554) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP) %>% arrange(desc(phaserelapse))
+  
+  write.csv(tar_relapse_up, "~/Documents/R/pedcancer/tar_relapse_up.csv")
+  
+  
+# down in relapse with 1sd cutoff
+  tar_relapse_down <- relapse_tab %>% filter(adj.P.Val <= 0.05) %>% filter(phaserelapse <= -0.2171302) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP) %>% arrange(phaserelapse)
+  
+  write.csv(tar_relapse_down, "~/Documents/R/pedcancer/tar_relapse_down.csv")
+  
+  
+  
+  tar_relapse_GSEA <- read.csv("~/Documents/R/pedcancer/tar_relapse_de_genes_GSEA.csv")
+  
+ tar_relapse_GSEA %>%
+  ggplot(mapping = aes(x = k.K, y = Gene.Set.Name)) +
+    geom_segment(aes(x = 0, y = fct_reorder(Gene.Set.Name, k.K), xend = k.K, yend = Gene.Set.Name, color = Group)) +
+      facet_wrap(~Group) +
+    geom_point(mapping = aes(x = k.K, y = fct_reorder(Gene.Set.Name, k.K), size = FDR.q.value)) +
+    theme_light() +
+    xlab("GSEA Enrichment Score (k/K)") +
+   ylab("") +
+        theme(axis.title.x = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"),
+        strip.text = element_text(size = 12)) 
+  
+```
+
+```{r}
+
+# distribution of gene changes in relapse
+
+phaserelapse_med <- relapse_tab %>%
+  summarise(median(phaserelapse))
+
+phaserelapse_sd <- relapse_tab %>%
+  summarise(sd(phaserelapse))
+
+phaserelapse_1sd_up <- phaserelapse_med + phaserelapse_sd
+phaserelapse_1sd_dn <- phaserelapse_med - phaserelapse_sd
+
+phaserelapse_2sd_up <- phaserelapse_med + 2*phaserelapse_sd
+phaserelapse_2sd_dn <- phaserelapse_med - 2*phaserelapse_sd
+
+
+relapse_tab %>%
+  ggplot(mapping = aes(x = phaserelapse)) + 
+  geom_histogram(binwidth = 0.05, fill = 'white', color = 'blue') +
+  theme_light() +
+    ylab("Gene Count") +
+  xlab("Normalized Expression Change: Dx to Relapse") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = 0.2276554, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = -0.2171302, linetype = 'dashed', color = 'red')
+
+
+
+
+```
+
+```{r}
+
+# aml genes up and down regulated at relapse
+
+# all DE genes
+
+tar_relapse_both <- relapse_tab %>% filter(adj.P.Val <= 0.05) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% arrange(desc(phaserelapse))
+
+# up in relapse by 2sd and adjP <= 0.05
+  tar_relapse_up <- relapse_tab %>% filter(adj.P.Val <= 0.05) %>% filter(phaserelapse >= 0.4500483) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP) %>% arrange(desc(phaserelapse))
+  
+  write.csv(tar_relapse_up, "~/Documents/R/pedcancer/tar_relapse_up.csv")
+  
+  
+# down in relapse with 0.5 cutoff
+  tar_relapse_down <- relapse_tab %>% filter(adj.P.Val <= 0.05) %>% filter(phaserelapse <= -0.4395231) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP) %>% arrange(phaserelapse)
+  
+  write.csv(tar_relapse_down, "~/Documents/R/pedcancer/tar_relapse_down.csv")
+
+```
+
+```{r}
+
+# mitocarta
+
+#top relapse mitogenes - 1sd
+relapse_mitogenes <- relapse_tab %>% filter(gene_id %in% mitogenes) %>%
+  dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% filter(adj.P.Val <= 0.05, phaserelapse >= 0)
+# write.csv(relapse_mitogenes, "~/Documents/R/pedcancer/relapse_mitogenes.csv", row.names = FALSE)
+
+#all relapse mitogenes with significant change and upregulated
+tar_mitogenes <- relapse_tab %>% 
+  filter(gene_id %in% relapse_mitogenes_dn$gene_id) 
+
+tar_mitogenes_vec <- relapse_mitogenes_dn$gene_id
+
+# mitopaths
+ relapse_mitopaths <- mitocarta %>% mutate(pathway = str_split_fixed(mitocarta$MitoCarta3.0_MitoPathways, ">", 3)) %>% filter(Symbol %in% tar_mitogenes_vec)
+
+ relapse_mitopaths_condensed <- relapse_mitopaths %>% dplyr::select(Symbol, pathway)
+ 
+ df <- as.data.frame(matrix(relapse_mitopaths_condensed$pathway, ncol = 3, byrow = FALSE))
+ 
+.rowNamesDF(df, make.names = FALSE) <- relapse_mitopaths$Symbol 
+
+# final mitopath relapsed genes
+relapse_mitopath_final <- as.data.frame(df) %>% rownames_to_column('gene_id')
+ 
+
+#top relapse mitogenes
+relapse_mitogenes <- relapse_tab %>% filter(gene_id %in% mitogenes) %>%
+  dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% filter(adj.P.Val <= 0.05, phaserelapse >= 0.2276554 | phaserelapse <= -0.2171302)
+
+
+write.csv(relapse_mitogenes, "~/Documents/R/pedcancer/relapse_mitogenes.csv", row.names = FALSE)
+
+```
+
+```{r}
+
+# data viz - volcano for top mito genes
+
+mito_relapse_plot <- relapse_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = neglogP)) + geom_point(alpha = 0.4) +
+             theme_light() +
+  ylab("NegLog FDR") +
+  xlab("Log2-FC gene expression") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = 0.2276554, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = -0.2171302, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = 1.3, linetype = 'dashed', color = 'red') +
+  geom_point(data = relapse_tab %>% filter(gene_id %in% mitogenes), color = 'yellow', alpha = 0.5) + 
+  geom_point(data = relapse_tab %>% filter(gene_id %in% relapse_mitogenes, phaserelapse >= 0.2276554 | phaserelapse <= -0.2171302, neglogP >= 2), color = 'blue', alpha = 0.8) +
+  geom_label_repel(data = relapse_tab %>% filter(gene_id %in% relapse_mitogenes, phaserelapse >= 0.2276554, neglogP >= 2), mapping = aes(label = gene_id), max.overlaps = 100)
+
+
+# visualize change in expression for individual genes
+target_relapse_expression %>%
+  dplyr::select(id, id2, phase, GCAT) %>%
+  filter(id2 %in% relapse_id2) %>% 
+  pivot_longer(cols = 4, 
+               names_to = 'gene',
+               values_to = 'expression') %>%
+  ggplot(mapping = aes(x = gene, y = expression, fill = phase)) + geom_boxplot()
+
+
+# used merge file to show genes by AML subtype
+target_relapse_clinical %>%
+  dplyr::select(id2, Primary.Cytogenetic.Code, phase, NDUFS8, TOMM40L, GCAT, GRPEL2, NUDT8, PRDX2, SLC25A28, MGST3, SLC25A39, PDE2A, BNIP3, LDHB) %>%
+    filter(id2 %in% relapse_id2) %>% 
+  filter(id2 != c("PASYJI", "PANTWV", "PARBIU", "PARCEV", "PARGDB", "PARIHK", "PARJVI", "PARYFN", "PASBBE", "PASXNR")) %>%
+    pivot_longer(cols = 4:15, 
+               names_to = 'gene',
+               values_to = 'expression') %>%
+  filter(Primary.Cytogenetic.Code == "MLL" | Primary.Cytogenetic.Code == 't(8;21)' | Primary.Cytogenetic.Code == "Normal") %>%
+    ggplot(mapping = aes(x = gene, y = expression, fill = phase)) + geom_boxplot() +
+  facet_wrap(~Primary.Cytogenetic.Code) +
+  theme_light() +
+  ylab("Gene Expression") +
+  xlab("Mito Gene") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black", angle = -30, vjust = 0.7, hjust = 0.1), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"),
+        strip.text.x = element_text(size = 14))
+
+```
+
+```{r}
+# visualize mito genes diff ex in relapse with pathways
+ 
+relapse_mitopath_final %>%
+  group_by(V2) %>%
+  filter(V2 != "") %>%
+   summarise(count = length(V2)) %>%
+   ggplot(mapping = aes(x = count, y = fct_reorder(V2, count))) + geom_bar(stat = 'identity', color = 'black', fill = 'blue') +             
+  theme_light() +
+  ylab("Mitocarta Pathway") +
+  xlab("DE Gene Count") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 12, color = "black"))
+
+# mean difference plot to see overview of data with focus on differential mito genes
+
+# use lipid pathway as example
+lipid_relapse <- pull(relapse_mitopath_final %>% filter(grepl("Lipid", V2)) %>% dplyr::select(gene_id))
+# aa pathway
+aa_relapse <- pull(relapse_mitopath_final %>% filter(grepl("Amino", V2)) %>% dplyr::select(gene_id))
+# unnamed pathway
+unknown_relapse <- pull(relapse_mitopath_final %>% filter(grepl("0", V1)) %>% dplyr::select(gene_id))
+
+relapse_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = neglogP)) + geom_point(alpha = 0.3) +
+             theme_light() +
+  ylab("NegLogP") +
+  xlab("Mean Expression Difference") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+  geom_point(data = relapse_tab %>% filter(gene_id %in% lipid_relapse), color = 'red', alpha = 0.75) +
+  geom_label_repel(data = relapse_tab %>% filter(gene_id %in% lipid_relapse) , mapping = aes(label = gene_id), max.overlaps = 50)
+  
+
+
+
+```
+
+
+
+
+
+
+```{r}
+# scrape
+
+# EXPRESSION
+expression_tar <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/gene_expression_array/L3/TARGET_AML_GE_level3.txt", 
+                           delim = "\t")
+
+expression_tar_clean <- expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+  dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>% 
+  filter(grepl("-09", id)) %>% # Collect only "Primary blood derived cancer – bone marrow" (code 09)
+  mutate(id = gsub("TARGET-20-", "", id),
+         id = gsub("\\-0.*", "", id)) %>% 
+  dplyr::group_by(id) %>%
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for each gene in sample duplicates (one duplicate)
+  dplyr::ungroup()
+
+## dz explore - pull out diagnosis and relapse expression data
+relapse_wob <- expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>%
+dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>% 
+  filter(grepl("-09", id) | grepl("-04", id)) %>% 
+  mutate(id2 = gsub("TARGET-20-", "", id),
+         id2 = gsub("\\-.*", "", id2)) %>% # Collect only "Primary blood derived cancer – bone marrow" (code 09 or 04)
+  dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+                               ifelse(grepl("-04", id), 'relapse',
+                               'other'))) %>%
+  dplyr::select(id, id2, GTPBP3, CTU1, URM1, ELP4, ELP3, DPH3, MOCS3, phase) 
+
+relapse_wob %>% 
+  group_by(phase) %>%
+  summarise(length(phase))
+
+relapse_id2 <- pull(relapse_wob %>%
+  mutate(id2 = gsub("TARGET-20-", "", id),
+         id2 = gsub("\\-.*", "", id2)) %>%
+  filter(phase == 'relapse') %>%
+  dplyr::select(id2))
+
+# samples with paired diagnosis and relapse
+ids <- pull(relapse_wob %>%
+  filter(id2 %in% relapse_id2) %>%
+  filter(!grepl("03", id)) %>%
+  arrange(id2) %>%
+  filter(id2 != "PAMYAS",
+         id2 != "PANLIZ",
+           id2 != "PANTWV",
+           id2 != "PARBIU",
+           id2 != "PARCEV",
+           id2 != "PARGDB",
+           id2 != "PARHVK",
+           id2 != "PARIHK",
+           id2 != "PARYFN",
+           id2 != "PASBBE",
+           id2 != "PASXNR",
+           id2 != "PASYJI") %>%
+  dplyr::select(id))
+```
+
+```{r}
+
+# scrape
+# EXPRESSION
+
+# EXPRESSION
+expression <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/gene_expression_array/L3/TARGET_AML_GE_level3.txt", 
+                           delim = "\t")
+
+expression_clean <- expression %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+  dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>% 
+  filter(grepl("-09", id)) %>% # Collect only "Primary blood derived cancer â€“ bone marrow" (code 09)
+  mutate(id = gsub("TARGET-20-", "", id),
+         id = gsub("\\-.*", "", id)) %>% 
+  dplyr::group_by(id) %>%
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for each gene in sample duplicates (one duplicate)
+  dplyr::ungroup()
+
+# saveRDS(expression_clean, file = "/Users/pol/Dropbox/aml_clusters/data/expression_clean.Rds")
+
+```
+
+```{r}
+
+# scrape
+# MIRNA
+
+manifest_mirna <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/MANIFEST.txt", 
+                               delim = " ", col_names = FALSE)
+
+manifest_mirna_sub <- manifest_mirna %>% 
+  filter(!grepl("isoform", X2)) %>% # Collect only "quantification"
+  filter(grepl("-09", X2)) %>% # Collect only "Primary blood derived cancer â€“ bone marrow" (code 09)
+  mutate(X2 = gsub("\\*", "", X2), 
+         X3 = gsub("TARGET-20-", "", X2),
+         X3 = gsub("\\-.*", "", X3)) %>% 
+  filter(X3 %in% expression_clean$id)
+
+
+mirna_clean <- data.frame()
+for (i in 1:nrow(manifest_mirna_sub)) {
+
+  path <- paste0("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/", 
+                 manifest_mirna_sub$X2[i])
+  file <- vroom::vroom(path, delim = "\t", col_names = TRUE)
+  
+  mirna_clean <- file %>% 
+    dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% 
+    mutate(id = manifest_mirna_sub$X3[i]) %>% 
+    pivot_wider(id_cols = "id", 
+                names_from = "miRNA_ID", 
+                values_from = "reads_per_million_miRNA_mapped") %>%
+    bind_rows(mirna_clean)
+  
+  print(paste0(i, "/", nrow(manifest_mirna_sub)))
+}
+
+mirna_clean <- mirna_clean %>%
+  dplyr::group_by(id) %>%
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for each miRNA in sample duplicates (two duplicates)
+  dplyr::ungroup()
+
+# saveRDS(mirna_clean, file = "/Users/pol/Dropbox/aml_clusters/data/mirna_clean.Rds")
+
+write.csv(mirna_clean, "~/Documents/R/pedcancer/pol_relapse_mirna_clean.csv", row.names = FALSE)
+
+write.csv(expression_clean, "~/Documents/R/pedcancer/pol_relapse_exp_clean.csv", row.names = FALSE)
+
+
+# Pol's files written from above code
+pol_tar_relapse_expression_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_exp_clean.csv")
+pol_tar_relapse_mirna_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_mirna_clean.csv")
+
+```
+
+```{r}
+
+# scrape
+# METHYLATION
+
+manifest_methylation <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/MANIFEST.txt", 
+                                     delim = " ", col_names = FALSE)
+
+manifest_methylation_sub <- manifest_methylation %>% 
+  filter(grepl("-09", X2)) %>% # Collect only "Primary blood derived cancer â€“ bone marrow" (code 09)
+  filter(grepl("27k", X2)) %>% # Collect only 27k array
+  mutate(X2 = gsub("\\*", "", X2), 
+         X3 = gsub("TARGET-20-", "", X2),
+         X3 = gsub("\\-.*", "", X3)) %>% 
+  filter(X3 %in% mirna_clean$id)
+
+methylation_clean <- data.frame()
+for (i in 1:nrow(manifest_methylation_sub)) {
+  
+  path <- paste0("https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/", 
+                 manifest_methylation_sub$X2[i])
+  
+  file <- vroom::vroom(path, delim = "\t", col_names = TRUE)
+  
+  if(!grepl("TARGET", file[2,1])) {
+    file <- data.frame(colnames(file)[2], file[2:nrow(file), 1], file[2:nrow(file), 2])
+    colnames(file) <- c("Sample ID", "Probe Name", "AVG_Beta")
+  }
+  
+  methylation_clean <- file %>% 
+    mutate(`Probe Name` = as.factor(`Probe Name`),
+           `AVG_Beta` = as.numeric(`AVG_Beta`)) %>% 
+    dplyr::select("Sample ID", "Probe Name", "AVG_Beta") %>% 
+    pivot_wider(id_cols = "Sample ID", names_from = "Probe Name", values_from = "AVG_Beta") %>% 
+    dplyr::rename(id = "Sample ID") %>% 
+    bind_rows(methylation_clean)
+  
+  print(paste0(i, "/", nrow(manifest_methylation_sub)))
+}
+
+methylation_clean <- methylation_clean %>%
+  mutate(id = gsub("TARGET-20-", "", id),
+         id = gsub("\\-.*", "", id))
+
+# saveRDS(methylation_clean, file = "/Users/pol/Dropbox/aml_clusters/data/methylation_clean.Rds")
+
+write.csv(methylation_clean, "~/Documents/R/pedcancer/pol_relapse_meth_clean.csv", row.names = FALSE)
+
+# Pol's files written from above code
+pol_tar_relapse_meth_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_meth_clean.csv")
+
+```
+
+```{r}
+
+# Pols clean files
+
+pol_tar_relapse_expression_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_exp_clean.csv")
+pol_tar_relapse_mirna_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_mirna_clean.csv")
+pol_tar_relapse_meth_clean <- read.csv("~/Documents/R/pedcancer/pol_relapse_meth_clean.csv")
+
+# patients with matched multiomics
+
+matched_samples <- c("PARDDY", "PARFAL", "PARUNX", "PASGWH", "PASHYZ", "PASMYS", "PASWAJ", "PATDNN", "PABLDZ", "PAECCE", "PAEIKD", "PAKERZ", "PAKIWK", "PAKTZX", "PAMYAS", "PAPXRJ", "PARBIU", "PARYVW", "PASPLU", "PASVVS", "PASVYA", "PATIAK")
+
+
+
+pol_tar_relapse_mirna_clean %>%
+  filter(id %in% matched_samples) %>%
+  dplyr::select(1:10)
+
+
+
+```
+
+```{r}
+
+# methylation
+# manual download
+
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PABLDZ-04A-03D_450k_L3.txt"
+cpg_PABLDZ_relapse <- vroom::vroom(path, delim = "\t", skip = 1) 
+cpg_PABLDZ_relapse <- na.omit(cpg_PABLDZ_relapse)
+cpg_PABLDZ_relapse$sample <- ("PABLDZ")
+cpg_PABLDZ_relapse$phase <- ("relapse")
+cpg_PABLDZ_relapse %>% dplyr::select(`Composite Element REF`, Beta_value, sample, phase) %>% pivot_wider(names_from = `Composite Element REF`,
+                                   values_from = Beta_value)
+
+colnames(cpg_PABLDZ_relapse) <- c("Probe.Name", "AVG_Beta", "Gene.Symbols", "Chromosome", "Position")
+cpg_PABLDZ_relapse$sample <- ("PABLDZ")
+pt51_tss <- pt51_cpg %>%
+  filter(Probe.Name %in% illumina_tss_2) %>%
+  dplyr::select(AVG_Beta, Gene.Symbols, sample) %>%
+  pivot_wider(names_from = sample,
+              values_from = AVG_Beta) %>% unnest() %>%
+  mutate(Gene.Symbols = gsub("\\;.*", "", Gene.Symbols)) %>%
+  dplyr:: select(PABLDZ, Gene.Symbols) %>%
+  group_by(Gene.Symbols) %>%
+  summarise(PABLDZ = median(PABLDZ))
+
+
+pt1_cpg$sample <- str_replace_all(pt1_cpg$Sample.ID, "TARGET-20-PADZKD-09A-01D", "PADZKD")
+pt1_cpg <- pt1_cpg %>% dplyr::select(-Sample.ID)
+pt1_tss <- pt1_cpg %>%
+  filter(Probe.Name %in% illumina_tss_2) %>%
+  dplyr::select(AVG_Beta, Gene.Symbols, sample) %>%
+  pivot_wider(names_from = sample,
+              values_from = AVG_Beta) %>% unnest() %>%
+  group_by(Gene.Symbols) %>%
+  summarise(PADZKD = median(PADZKD))
+
+
+```
+
+```{r}
+
+# limma for dx vs relapse
+# pull out these data from whole transcript dataset
+relapse_exp_mat <- as.matrix(expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+  dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>%
+  mutate(id2 = gsub("TARGET-20-", "", id),
+         id2 = gsub("\\-.*", "", id2)) %>% 
+  filter(id %in% ids) %>% 
+  column_to_rownames('id') %>%
+  t())
+
+# df for above matrix
+relapse_exp <- expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+  dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>%
+  mutate(id2 = gsub("TARGET-20-", "", id),
+         id2 = gsub("\\-.*", "", id2)) %>% 
+  filter(id %in% ids) %>% 
+      dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+                               ifelse(grepl("-04", id), 'relapse',
+                               'other')))
+
+
+# group designation for paired 09 and 04 samples
+id_relapse <- expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for the same gene in the same sample
+  dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column('id') %>%
+  filter(id %in% ids) %>%
+    dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+                               ifelse(grepl("-04", id), 'relapse',
+                               'other'))) %>%
+  filter(phase != 'other') %>%
+  dplyr::select(id, phase)
+  
+# limma for de genes diagnosis vs relapse
+  design <- model.matrix(~phase, id_relapse)
+    fit <- lmFit(relapse_exp_mat, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tab <- topTable(fit, sort = "none", n = Inf) %>% rownames_to_column("gene_id") %>%
+    select(gene_id, logFC, P.Value, adj.P.Val) %>%
+    mutate(gene_id = str_replace_all(gene_id, "\\..*", "")) %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    arrange(desc(-adj.P.Val))
+
+  relapse_overexpressed <- tab %>% filter(adj.P.Val <= 0.05,
+                 logFC > 0) %>%
+    arrange(desc(logFC))
+  
+  write.csv(relapse_overexpressed, "~/Documents/R/pedcancer/relapse_overexpressed.csv")
+  
+  oxphos_genes <- pull(mitocarta %>% filter(grepl("OXPHOS", MitoCarta3.0_MitoPathways)) %>% select(Symbol))
+  
+ tab %>% filter(gene_id %in% mitocarta_genes) %>% ggplot(mapping = aes(x = logFC, y = neglogP)) + geom_point(alpha = 0.5) +
+   geom_point(data = tab %>% filter(gene_id %in% oxphos_genes), mapping = aes(color = 'red')) +
+           theme_light() +
+  ylab("NegLog FDR") +
+  xlab("LogFC mitocarta gene expression") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black")) +
+   geom_vline(xintercept = 1, linetype = 'dashed', color = 'black') +
+   geom_vline(xintercept = -1, linetype = 'dashed', color = 'black') +
+   geom_hline(yintercept = )
+   
+ 
+relapse_exp %>%   
+  dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+                               ifelse(grepl("-04", id), 'relapse',
+                               'other'))) %>%
+  dplyr::select(id, GTPBP3, CTU1, URM1, ELP4, ELP3, DPH3, MOCS3, phase) %>%
+  pivot_longer(cols = 2:8,
+               names_to = 'gene_id',
+               values_to = 'expression') %>%
+  group_by(gene_id, phase) %>%
+  ggplot(mappin = aes(x = gene_id, y = expression, fill = phase)) + geom_boxplot()
+
+  relapse_suppressed <- tab %>% filter(adj.P.Val <= 0.05,
+                                       logFC < 0) %>%
+    arrange(logFC) %>%
+    filter(!grepl("OR", gene_id))
+  
+    write.csv(relapse_suppressed, "~/Documents/R/pedcancer/relapse_suppressed.csv")
+
+  
+  relapse_vol <- tab %>% 
+  ggplot(mapping = aes(x = logFC, y = neglogP)) + geom_point(alpha = 0.5) +
+  geom_point(data = tab %>% filter(logFC < -0.25 & neglogP > 5 |
+                                   logFC > 0.25 & neglogP > 5), 
+             mapping = aes(x = logFC, y = neglogP, color = 'red'))
+
+  
+# cytogenetics of relapsed samples
+  
+  target_discovery_clinical_3 %>%
+    filter(sample %in% has_both)
+  
+ runx1_ids <- pull(target_discovery_clinical_3 %>%
+    filter(sample %in% has_both) %>%
+    filter(grepl("RUNX1", Gene.Fusion)) %>%
+    dplyr::select(sample))
+ 
+ kmt2a_ids <- pull(target_discovery_clinical_3 %>%
+    filter(sample %in% has_both) %>%
+    filter(grepl("KMT2A", Gene.Fusion)) %>%
+    dplyr::select(sample))
+ 
+ runx1_design <- relapse_exp %>% 
+   filter(id2 %in% runx1_ids) %>%
+   dplyr::select(id, phase)
+   
+ runx1_mat <- as.matrix(relapse_exp %>% 
+   filter(id2 %in% runx1_ids) %>%
+   dplyr::select(!id2, !phase) %>%
+   column_to_rownames('id') %>%
+   t() %>%
+   as.data.frame() %>%
+   as.numeric())
+ 
+ kmt2a_design <- relapse_exp %>%
+   filter(id2 %in% kmt2a_ids) %>%
+   dplyr::select(phase, id)
+ 
+ kmt2a_mat <- as.matrix(relapse_exp %>%
+    filter(id2 %in% kmt2a_ids) %>%
+      dplyr::select(!id2, !phase) %>%
+      column_to_rownames('id') %>%
+      t())
+ kmt2a_mat <- as.numeric(kmt2a_mat)
+ 
+   design <- model.matrix(~phase, kmt2a_design)
+    fit <- lmFit(kmt2a_mat, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tab <- topTable(fit, sort = "none", n = Inf) %>% rownames_to_column("gene_id") %>%
+    select(gene_id, logFC, P.Value, adj.P.Val) %>%
+    mutate(gene_id = str_replace_all(gene_id, "\\..*", "")) %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    arrange(desc(-adj.P.Val))
+  
+# identify cluster 6 samples only
+cluster6_wob <- relapse_wob %>%
+  filter(grepl("PATAST", id) | 
+           grepl("PASXYG", id) | 
+           grepl("PASEFD", id) |
+           grepl("PASCCS", id) |
+                   grepl("PARJCR", id) |
+                   grepl("PARCVP", id))
+
+clusters_relapse_wob <- relapse_wob %>%
+  dplyr::select(!id2) %>%
+  mutate(cluster = ifelse(grepl("PATAST", id) | 
+           grepl("PASXYG", id) | 
+           grepl("PASEFD", id) |
+           grepl("PASCCS", id) |
+                   grepl("PARJCR", id) |
+                   grepl("PARCVP", id), 'cluster 6',
+           ifelse(grepl("PAMVVP", id) |
+                    grepl("PAMYGX", id) | 
+                    grepl("PANAEV", id) |
+                    grepl("PANLJN", id) |
+                    grepl("PAPZLT", id) | 
+                    grepl("PARBFJ", id) |
+                    grepl("PARERV", id) |
+                    grepl("PARTXH", id) | 
+                    grepl("PARYXV", id) |
+                    grepl("PASDGX", id) |
+                    grepl("PASELF", id) |
+                    grepl("PASRTP", id), 'cluster 7', 'other')))
+
+clusters_relapse_wob %>%
+pivot_longer(cols = 2:8,
+             names_to = "gene",
+             values_to = "exp") %>%
+  group_by(phase) %>% 
+  ggplot(mapping = aes(x = fct_reorder(gene, exp), y = exp, fill = phase)) + 
+  geom_boxplot() +
+  facet_grid(~cluster) +
+        theme_light() +
+  ylab("Gene Expression") +
+  xlab("") +
+    theme(panel.background = element_rect(fill = "transparent"),
+        axis.line = element_line(linetype = "solid", size = 0.5),
+        axis.title.x = element_text(family = "Arial", size = 16),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black", angle = 30, hjust = 0.9, vjust = 1), 
+        axis.title.y = element_text(family = "Arial", size = 10),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"))
+
+clusters_relapse_wob %>% filter(cluster == "cluster 6")
+
+clusters_relapse_wob %>%
+  mutate(pt = ifelse(grepl("PASEFD", id), 'PASEFD',
+                     ifelse(grepl("PASXYG", id), 'PASXYG',
+                            ifelse(grepl("PATAST", id), 'PATAST',
+                                   ifelse(grepl("PARJCR", id), 'PARJCR', 'other'))))) %>%
+  filter(pt != 'other') %>%
+  pivot_longer(cols = 2:8, 
+               names_to = 'gene', 
+               values_to = 'exp') %>%
+  group_by(gene) %>%
+  ggplot(mapping = aes(x = phase, y = exp, group = pt)) + geom_line(aes(color = pt)) + facet_grid(~gene) +
+        theme_light() +
+  ylab("") +
+  xlab("") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5),
+        axis.title.x = element_text(family = "Arial", size = 12),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black", angle = 30, hjust = 0.9, vjust = 1), 
+        axis.title.y = element_text(family = "Arial", size = 12),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"))
+
+
+# saveRDS(expression_clean, file = "/Users/pol/Dropbox/aml_clusters/data/expression_clean.Rds")
+  
+```
+
+```{r}
+
+# all bone marrow dx and relapse samples
+relapse_allgenes <- expression_tar %>% 
+  dplyr::filter(!is.na(expression$`Gene Symbol`)) %>% 
+  dplyr::select(-ID) %>% 
+  dplyr::group_by(`Gene Symbol`) %>% 
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>%
+dplyr::ungroup() %>% 
+  column_to_rownames("Gene Symbol") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column("id") %>% 
+  filter(grepl("-09", id) | grepl("-04", id)) %>%  # Collect only "Primary blood derived cancer – bone marrow" (code 09 or 04)
+  dplyr::mutate(phase = ifelse(grepl("-09", id), 'diagnosis',
+                               'relapse'))
+
+# identify diagnosis vs relapse samples
+relapse_groups <- relapse_allgenes %>%
+  dplyr::select(id, phase)
+
+# gene expression matrix for diagnosis and relapse samples
+relapse_matrix <- as.matrix(relapse_allgenes %>%
+  dplyr::select(!phase) %>%
+  column_to_rownames('id') %>%
+    t())
+
+# limma for de genes diagnosis vs relapse
+  design <- model.matrix(~phase, relapse_groups)
+    fit <- lmFit(relapse_matrix, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tab <- topTable(fit, sort = "none", n = Inf) %>% rownames_to_column("gene_id") %>%
+    select(gene_id, logFC, P.Value, adj.P.Val) %>%
+    mutate(gene_id = str_replace_all(gene_id, "\\..*", "")) %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    arrange(desc(-adj.P.Val))
+
+relapse_vol <- tab %>% 
+  ggplot(mapping = aes(x = logFC, y = neglogP)) + geom_point(alpha = 0.5) +
+  geom_point(data = tab %>% filter(logFC < -0.25 & neglogP > 5 |
+                                   logFC > 0.25 & neglogP > 5), 
+             mapping = aes(x = logFC, y = neglogP, color = 'red')) +
+  geom_label_repel(data = tab %>% filter(gene_id == "GTPBP3" |
+                                           gene_id == "CTU1" |
+                                           gene_id == "URM1" |
+                                           gene_id == "ELP4" |
+                                           gene_id == "ELP3" |
+                                           gene_id == "DPH3" | 
+                                           gene_id == "MOCS3"),
+                   mapping = aes(label = gene_id))
+
+tab %>% filter(gene_id == "GTPBP3" |
+                                           gene_id == "CTU1" |
+                                           gene_id == "URM1" |
+                                           gene_id == "ELP4" |
+                                           gene_id == "ELP3" |
+                                           gene_id == "DPH3" | 
+                                           gene_id == "MOCS3")
+
+
+# top gene lists
+degenes <- pull(tab %>% filter(adj.P.Val < 0.05) %>% dplyr::select(gene_id))
+degenes_up <- pull(tab %>% filter(adj.P.Val < 0.05, logFC > 0) %>% dplyr::select(gene_id))
+
+
+
+# repeat code
+# samples with paired dx/relapse gene expression
+relapse_allgenes_cl6pairs <- relapse_allgenes %>%
+  filter(grepl("PATAST", id) |
+           grepl("PASXYG", id) |
+           grepl("PASEFD", id) |
+           grepl("PARJCR", id))
+
+# expression matrix of paired dx/relapse
+relapse_allgenes_cl6pairs_matrix <- as.matrix(relapse_allgenes_cl6pairs %>%
+  dplyr::select(!phase) %>%
+  column_to_rownames('id') %>%
+  t())
+
+# limma for de genes diagnosis vs relapse
+  design <- model.matrix(~phase, relapse_allgenes_cl6pairs)
+    fit <- lmFit(relapse_allgenes_cl6pairs_matrix, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tab <- topTable(fit, sort = "none", n = Inf) %>% rownames_to_column("gene_id") %>%
+    select(gene_id, logFC, P.Value, adj.P.Val) %>%
+    mutate(gene_id = str_replace_all(gene_id, "\\..*", "")) %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    arrange(desc(-adj.P.Val))
+
+relapse_cl6pairs_vol <- tab %>% 
+  ggplot(mapping = aes(x = logFC, y = neglogP)) + geom_point(alpha = 0.5) +
+  geom_point(data = tab %>% filter(logFC < -1 & adj.P.Val < 0.05 |
+                                   logFC > 1 & adj.P.Val < 0.05), 
+             mapping = aes(x = logFC, y = neglogP, color = 'red')) +
+  geom_label_repel(data = tab %>% filter(gene_id == "GTPBP3" |
+                                           gene_id == "CTU1" |
+                                           gene_id == "URM1" |
+                                           gene_id == "ELP4" |
+                                           gene_id == "ELP3" |
+                                           gene_id == "DPH3" | 
+                                           gene_id == "MOCS3"),
+                   mapping = aes(label = gene_id), max.overlaps = 10) +
+      theme_light() +
+  ylab("NegLogP") +
+  xlab("LogFC Relapse/Dx") +
+    theme(panel.background = element_rect(fill = "transparent"),
+        axis.line = element_line(linetype = "solid", size = 0.5),
+        axis.title.x = element_text(family = "Arial", size = 16),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 10),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"))
+
+tab %>% filter(gene_id == "GTPBP3" |
+                                           gene_id == "CTU1" |
+                                           gene_id == "URM1" |
+                                           gene_id == "ELP4" |
+                                           gene_id == "ELP3" |
+                                           gene_id == "DPH3" | 
+                                           gene_id == "MOCS3")
+
+
+
+cl6_degenes <- pull(tab %>% filter(adj.P.Val < 0.05) %>% dplyr::select('gene_id') %>% filter(!grepl("OR", gene_id)))
+
+
+
+```
+
+```{r}
+
+# heatmap of diagnosis v relapse
+
+genes_dx <- relapse_allgenes %>%
+  filter(grepl("09", id)) %>%
+  column_to_rownames("id") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_id")
+
+genes_relapse <- relapse_allgenes %>%
+  filter(grepl("04", id)) %>%
+  column_to_rownames("id") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_id")
+  
+degenes_relapse <- merge(genes_dx, genes_relapse, by = "gene_id") %>%
+  filter(gene_id %in% degenes_up)
+
+degenes_relapse_mat <- as.matrix(degenes_relapse %>% column_to_rownames('gene_id'))
+
+degenes_relapse_mat <- as.numeric(degenes_relapse_mat)
+
+pheatmap(degenes_relapse_mat)
+```
+
+```{r}
+
+# heatmap cluster 6 dx v relapse
+
+cl6_genes_dx <- relapse_allgenes_cl6pairs %>%
+  filter(grepl("09", id)) %>%
+  column_to_rownames("id") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_id")
+
+cl6_genes_relapse <- relapse_allgenes_cl6pairs %>%
+  filter(grepl("04", id)) %>%
+  column_to_rownames("id") %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column("gene_id")
+  
+cl6_degenes_relapse <- merge(cl6_genes_dx, cl6_genes_relapse, by = "gene_id") %>%
+  filter(gene_id %in% cl6_degenes)
+
+cl6_degenes_relapse_mat <- as.matrix(cl6_degenes_relapse %>% column_to_rownames('gene_id'))
+
+cl6_degenes_relapse_mat <- as.numeric(cl6_degenes_relapse_mat)
+
+pheatmap(cl6_degenes_relapse_mat, cluster_cols = F, cluster_rows = F)
+
+```
+
+```{r}
+
+# mitocarta genes differentially expressed in relapse from limma above
+
+mitocarta_genes <- pull(mitocarta %>% dplyr::select(Symbol))
+mitocarta_groups <- mitocarta %>% dplyr::select(Symbol, MitoCarta3.0_MitoPathways)
+
+mitocarta_tab <- tab %>% filter(gene_id %in% mitocarta_genes)
+
+mitocarta_tab %>% filter(adj.P.Val <0.05) %>%
+  ggplot(mapping = aes(x = logFC, y = fct_reorder(gene_id, logFC))) + geom_bar(stat = 'identity') 
+
+```
+
+```{r}
+
+# AML cell lines with wobble expression
+
+expression_v_depscore_2 %>%
+  filter(gene_id == "CTU1") %>%
+    ggplot(mapping = aes(x = fct_reorder(stripped_cell_line_name, expression), y = expression, label = stripped_cell_line_name)) +
+  geom_point() +
+  geom_point(data = expression_v_depscore_2 %>%
+               filter(gene_id == "CTU1", 
+                      lineage_subtype == "AML"), 
+             mapping = aes(color = "red")) +
+  geom_label_repel(data = expression_v_depscore_2 %>%
+                    filter(gene_id == "CTU1", 
+                           lineage_subtype == "AML", 
+                           expression <1 | expression > 2.5), 
+                   point.size = NA) +
+          theme_light() +
+  ylab("Expression") +
+  xlab("") +
+    theme(panel.background = element_rect(fill = "transparent"),
+        axis.line = element_line(linetype = "solid", size = 0.5),
+        axis.title.x = element_text(family = "Arial", size = 16),
+        axis.text.x = element_blank(), 
+        axis.title.y = element_text(family = "Arial", size = 10),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"))
+  
+  expression_v_depscore_2 %>%
+    filter(gene_id == "GTPBP3" |
+           gene_id == "CTU1" |
+           gene_id == "URM1" |
+           gene_id == "ELP4" |
+           gene_id == "ELP3" |
+           gene_id == "DPH3" | 
+            gene_id == "MOCS3") %>%
+    filter(lineage_subtype == "AML") %>%
+    dplyr::select(stripped_cell_line_name, gene_id, expression) %>%
+    pivot_wider(names_from = stripped_cell_line_name, 
+                values_from = expression) %>%
+    unnest()  
+
+```
+
+```{r}
+
+# MIRNA
+manifest_mirna <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/MANIFEST.txt", 
+                               delim = " ", col_names = FALSE)
+
+manifest_mirna_sub <- manifest_mirna %>% 
+  filter(!grepl("isoform", X2)) %>% # Collect only "quantification"
+  filter(grepl("-09", X2)) %>% # Collect only "Primary blood derived cancer – bone marrow" (code 09)
+  mutate(X2 = gsub("\\*", "", X2), 
+         X3 = gsub("TARGET-20-", "", X2),
+         X3 = gsub("\\-.*", "", X3)) %>% 
+  filter(X3 %in% expression_clean$id)
+
+mirna_clean <- data.frame()
+for (i in 1:nrow(manifest_mirna_sub)) {
+
+  path <- paste0("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/", 
+                 manifest_mirna_sub$X2[i])
+  file <- vroom::vroom(path, delim = "\t", col_names = TRUE)
+  
+  mirna_clean <- file %>% 
+    dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% 
+    mutate(id = manifest_mirna_sub$X3[i]) %>% 
+    pivot_wider(id_cols = "id", 
+                names_from = "miRNA_ID", 
+                values_from = "reads_per_million_miRNA_mapped") %>%
+    bind_rows(mirna_clean)
+  
+  print(paste0(i, "/", nrow(manifest_mirna_sub)))
+}
+
+mirna_clean <- mirna_clean %>%
+  dplyr::group_by(id) %>%
+  dplyr::summarise_all(list(~ median(.x, na.rm = TRUE))) %>% # Compute median for each miRNA in sample duplicates (two duplicates)
+  dplyr::ungroup()
+
+# saveRDS(mirna_clean, file = "/Users/pol/Dropbox/aml_clusters/data/mirna_clean.Rds")
+
+# METHYLATION
+manifest_methylation <- vroom::vroom("https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/MANIFEST.txt", 
+                                     delim = " ", col_names = FALSE)
+
+manifest_methylation_sub <- manifest_methylation %>% 
+  filter(grepl("-09", X2)) %>% # Collect only "Primary blood derived cancer – bone marrow" (code 09)
+  filter(grepl("27k", X2)) %>% # Collect only 27k array
+  mutate(X2 = gsub("\\*", "", X2), 
+         X3 = gsub("TARGET-20-", "", X2),
+         X3 = gsub("\\-.*", "", X3)) %>% 
+  filter(X3 %in% mirna_clean$id)
+
+methylation_clean <- data.frame()
+for (i in 1:nrow(manifest_methylation_sub)) {
+  
+  path <- paste0("https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/", 
+                 manifest_methylation_sub$X2[i])
+  
+  file <- vroom::vroom(path, delim = "\t", col_names = TRUE)
+  
+  if(!grepl("TARGET", file[2,1])) {
+    file <- data.frame(colnames(file)[2], file[2:nrow(file), 1], file[2:nrow(file), 2])
+    colnames(file) <- c("Sample ID", "Probe Name", "AVG_Beta")
+  }
+  
+  methylation_clean <- file %>% 
+    mutate(`Probe Name` = as.factor(`Probe Name`),
+           `AVG_Beta` = as.numeric(`AVG_Beta`)) %>% 
+    dplyr::select("Sample ID", "Probe Name", "AVG_Beta") %>% 
+    pivot_wider(id_cols = "Sample ID", names_from = "Probe Name", values_from = "AVG_Beta") %>% 
+    dplyr::rename(id = "Sample ID") %>% 
+    bind_rows(methylation_clean)
+  
+  print(paste0(i, "/", nrow(manifest_methylation_sub)))
+}
+
+methylation_clean <- methylation_clean %>%
+  mutate(id = gsub("TARGET-20-", "", id),
+         id = gsub("\\-.*", "", id))
+
+# saveRDS(methylation_clean, file = "/Users/pol/Dropbox/aml_clusters/data/methylation_clean.Rds")
+
+
+```
+
+```{r}
+# relapse pairs
+
+pair_ids <- c("PARDDY", "PARFAL", "PARUNX", "PASGWH", "PASHYZ", "PASMYS", "PASWAJ", "PATDNN", "PABLDZ", "PAECCE", "PAEIKD", "PAKIWK", "PAKTCX", "PAMYAS", "PAPXRJ", "PARYVW", "PASVVS", "PASVYA", "PATIAK", "PADYIR", "PADZCG", "PAEERJ", "PALGKX", "PANLIZ", "PARCZL", "PARTAL", "PASYJI")
+
+"PADYIR", "PADZCG", "PAEERJ", "PALGKX", "PANLIZ", "PARCZL", "PARTAL", "PASYJI" 
+
+PARDDY_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARDDY-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARDDY_relapse = RPKM)
+
+PARDDY_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARDDY-09A-05R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARDDY_diagnosis = RPKM)
+
+PARFAL_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARFAL-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARFAL_relapse = RPKM)
+
+PARFAL_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARFAL-09A-05R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARFAL_diagnosis = RPKM)
+
+PARUNX_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARUNX-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARUNX_relapse = RPKM)
+
+PARUNX_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARUNX-09A-04R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARUNX_diagnosis = RPKM)
+
+PASGWH_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASGWH-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASGWH_relapse = RPKM)
+
+PASGWH_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASGWH-09A-04R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASGWH_diagnosis = RPKM)
+
+PASHYZ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASHYZ-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASHYZ_relapse = RPKM)
+
+PASHYZ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASHYZ-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASHYZ_diagnosis = RPKM)
+
+PASWAJ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASWAJ-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASWAJ_relapse = RPKM)
+
+PASWAJ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASWAJ-09A-04R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASWAJ_diagnosis = RPKM)
+
+PATDNN_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATDNN-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PATDNN_relapse = RPKM)
+
+PATDNN_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATDNN-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PATDNN_diagnosis = RPKM)
+
+PABLDZ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PABLDZ-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PABLDZ_relapse = RPKM)
+
+PABLDZ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PABLDZ-09A-04R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PABLDZ_diagnosis = RPKM)
+
+PAECCE_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAECCE-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAECCE_relapse = RPKM)
+
+PAECCE_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAECCE-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAECCE_diagnosis = RPKM)
+
+PAEIKD_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEIKD-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAEIKD_relapse = RPKM)
+
+PAEIKD_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEIKD-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAEIKD_diagnosis = RPKM)
+
+PAKERZ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKERZ-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKERZ_relapse = RPKM)
+
+PAKERZ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKERZ-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKERZ_diagnosis = RPKM)
+
+PAKIWK_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKIWK-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKIWK_relapse = RPKM)
+
+PAKIWK_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKIWK-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKIWK_diagnosis = RPKM)
+
+PAKTCX_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKTCX-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKTCX_relapse = RPKM)
+
+PAKTCX_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKTCX-09A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAKTCX_diagnosis = RPKM)
+
+PAMYAS_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAMYAS-04A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAMYAS_relapse = RPKM)
+
+PAMYAS_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAMYAS-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAMYAS_diagnosis = RPKM)
+
+PAPXRJ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAPXRJ-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAPXRJ_relapse = RPKM)
+
+PAPXRJ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAPXRJ-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAPXRJ_diagnosis = RPKM)
+
+PARBIU_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARBIU-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARBIU_relapse = RPKM)
+
+PARBIU_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARBIU-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARBIU_diagnosis = RPKM)
+
+PARYVW_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARYVW-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARYVW_relapse = RPKM)
+
+PARYVW_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARYVW-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARYVW_diagnosis = RPKM)
+
+PASPLU_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASPLU-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASPLU_relapse = RPKM)
+
+PASPLU_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASPLU-09A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASPLU_diagnosis = RPKM)
+
+PASVVS_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVVS-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASVVS_relapse = RPKM)
+
+PASVVS_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVVS-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASVVS_diagnosis = RPKM)
+
+PASVYA_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVYA-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASVYA_relapse = RPKM)
+
+PASVYA_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVYA-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASVYA_diagnosis = RPKM)
+
+PATIAK_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATIAK-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PATIAK_relapse = RPKM)
+
+PATIAK_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATIAK-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PATIAK_diagnosis = RPKM)
+
+PADYIR_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PADYIR-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PADYIR_relapse = RPKM)
+
+PADYIR_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PADYIR-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PADYIR_diagnosis = RPKM)
+
+PADZCG_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PADZCG-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PADZCG_relapse = RPKM)
+
+PADZCG_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PADZCG-09A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PADZCG_diagnosis = RPKM)
+
+PAEERJ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEERJ-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAEERJ_relapse = RPKM)
+
+PAEERJ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEERJ-09A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PAEERJ_diagnosis = RPKM)
+
+PALGKX_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PALGKX-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PALGKX_relapse = RPKM)
+
+PALGKX_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PALGKX-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PALGKX_diagnosis = RPKM)
+
+PANLIZ_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PANLIZ-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PANLIZ_relapse = RPKM)
+
+PANLIZ_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PANLIZ-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PANLIZ_diagnosis = RPKM)
+
+PARCZL_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARCZL-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARCZL_relapse = RPKM)
+
+PARCZL_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARCZL-09A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARCZL_diagnosis = RPKM)
+
+PARTAL_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARTAL-04A-01R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARTAL_relapse = RPKM)
+
+PARTAL_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARTAL-09A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PARTAL_diagnosis = RPKM)
+
+PASYJI_relapse_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASYJI-04A-02R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASYJI_relapse = RPKM)
+
+PASYJI_diagnosis_expression <- read.table(url("https://target-data.nci.nih.gov/Public/AML/mRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASYJI-09A-03R.gene.quantification.txt"), header = TRUE) %>% dplyr::select(gene, RPKM) %>% dplyr::rename(PASYJI_diagnosis = RPKM)
+
+# to merge these with one function:
+# first generate df list,
+df_list <- list(PARDDY_relapse_expression, 
+                PARDDY_diagnosis_expression,
+                PARFAL_relapse_expression, 
+                PARFAL_diagnosis_expression, 
+                PARUNX_relapse_expression, 
+                PARUNX_diagnosis_expression,
+                PASGWH_relapse_expression,
+                PASGWH_diagnosis_expression,
+                PASHYZ_relapse_expression,
+                PASHYZ_diagnosis_expression,
+                PASWAJ_relapse_expression,
+                PASWAJ_diagnosis_expression, 
+                PATDNN_relapse_expression,
+                PATDNN_diagnosis_expression,
+                PABLDZ_relapse_expression,
+                PABLDZ_diagnosis_expression,
+                PAECCE_relapse_expression,
+                PAECCE_diagnosis_expression,
+                PAEIKD_relapse_expression,
+                PAEIKD_diagnosis_expression, 
+                PAKERZ_relapse_expression,
+                PAKERZ_diagnosis_expression,
+                PAKIWK_relapse_expression,
+                PAKIWK_diagnosis_expression,
+                PAKTCX_relapse_expression,
+                PAKTCX_diagnosis_expression,
+                PAMYAS_relapse_expression,
+                PAMYAS_diagnosis_expression,
+                PAPXRJ_relapse_expression,
+                PAPXRJ_diagnosis_expression,
+                PARBIU_relapse_expression,
+                PARBIU_diagnosis_expression,
+                PARYVW_relapse_expression,
+                PARYVW_diagnosis_expression,
+                PASPLU_relapse_expression,
+                PASPLU_diagnosis_expression,
+                PASVVS_relapse_expression,
+                PASVVS_diagnosis_expression,
+                PASVYA_relapse_expression,
+                PASVYA_diagnosis_expression,
+                PATIAK_relapse_expression,
+                PATIAK_diagnosis_expression,
+                PADYIR_relapse_expression,
+                PADYIR_diagnosis_expression,
+                PADZCG_relapse_expression,
+                PADZCG_diagnosis_expression,
+                PAEERJ_relapse_expression,
+                PAEERJ_diagnosis_expression,
+                PALGKX_relapse_expression,
+                PALGKX_diagnosis_expression,
+                PANLIZ_relapse_expression,
+                PANLIZ_diagnosis_expression,
+                PARCZL_relapse_expression,
+                PARCZL_diagnosis_expression,
+                PARTAL_relapse_expression,
+                PARTAL_diagnosis_expression,
+                PASYJI_relapse_expression,
+                PASYJI_diagnosis_expression)
+
+# df_list %>% reduce(full_join, by = 'gene') -- tried this from tidyverse but did not work
+
+# then reduce to single df
+df_list_reduced <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list) 
+
+tar_paired_exp <- df_list_reduced %>% column_to_rownames('gene') %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column('sample') %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse')) %>%
+  separate(sample, c("id"), "_")
+
+tar_paired_exp <- tar_paired_exp[,c(1,58452, 2:58451)]
+
+tar_paired_exp %>% dplyr::select(1:10) %>% head(10) %>% view()
+
+# write.csv(tar_paired_exp, "~/Documents/R/pedcancer/tar_paired_exp.csv", row.names = FALSE)
+tar_paired_exp <- read.csv("~/Documents/R/pedcancer/tar_paired_exp.csv")
+tar_paired_ids <- tar_paired_exp$id
+
+```
+
+
+
+```{r}
+
+# add clinical info
+
+tar_paired_clinical <- target_discovery_clinical_3 %>%
+  filter(sample %in% tar_paired_ids) %>%
+  mutate(relapse_time = ifelse(Event.Free.Survival.Time.in.Days >= 365, 'Late Relapse', 'Early Relapse')) %>%
+# boolean code for risk stratification
+  mutate(flt3 = ifelse(grepl('No', FLT3.ITD.positive.) &
+                         grepl('No', FLT3.PM) |
+                         grepl('NO', FLT3.ITD.positive.) &
+                         grepl('No', FLT3.PM) |
+                          grepl('NO', FLT3.ITD.positive.) &
+                         grepl('NO', FLT3.PM) |
+                         grepl('No', FLT3.ITD.positive.) &
+                         grepl('NO', FLT3.PM), '0', '1')) %>%
+  mutate(cebpa = ifelse(grepl('Yes', CEBPA.mutation), '1', '0')) %>%
+  mutate(npm = ifelse(grepl('Yes', NPM.mutation), '1', '0')) %>%
+  mutate(karyotype = ifelse(Primary.Cytogenetic.Code == 'Normal', 'normal', 'abnormal')) %>%
+  mutate(cytogenetic_risk = ifelse(grepl('RUNX1', Gene.Fusion) | 
+                                    grepl('CBFB', Gene.Fusion), 'Favorable',
+                                   ifelse(grepl('KMT2A-MLLT10', Gene.Fusion) | 
+                                     grepl('KMT2A-MLLT4', Gene.Fusion) |
+                                     grepl('KMT2A-SEPT6', Gene.Fusion) |
+                                     grepl('KMT2A-ELL', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT2', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT1', Gene.Fusion) |
+                                     grepl('NUP98', Gene.Fusion) | 
+                                     grepl('DEK', Gene.Fusion) |
+                                     grepl('CBFA2T3-', Gene.Fusion) |
+                                     grepl('MLLT10', Gene.Fusion) |
+                                     grepl('NPM1', Gene.Fusion) |
+                                     grepl('ETV6', Gene.Fusion) |
+                                     grepl('Yes', monosomy.7) |
+                                     grepl('Yes', monosomy.5), 'Unfavorable', 'Other'))) %>% 
+  mutate(mrd1_status = ifelse(grepl('Yes', MRD.at.end.of.course.1), '1', '0')) %>% 
+  mutate(risk_group = ifelse(cytogenetic_risk == 'Unfavorable' |
+                             cytogenetic_risk == 'Other' & flt3 == '1' |
+                             cytogenetic_risk == 'Favorable' & flt3 == '1' & cebpa == '0' |
+                             cytogenetic_risk == 'Favorable' & mrd1_status == '1', 'HR',
+                      ifelse(cytogenetic_risk == 'Favorable' & flt3 == '0' & mrd1_status == '0' |
+                             cytogenetic_risk == 'Favorable' | cytogenetic_risk == 'Other' & karyotype == 'normal' & cebpa == '1' |
+                             cytogenetic_risk == 'Favorable' | cytogenetic_risk == 'Other' & karyotype == 'normal' & npm == '1', 'LR1', 'LR2')))
+
+lr1 <- pull(tar_paired_clinical %>% filter(risk_group == 'LR1') %>% dplyr::select(sample))
+lr2 <- pull(tar_paired_clinical %>% filter(risk_group == 'LR2') %>% dplyr::select(sample))
+hr <- pull(tar_paired_clinical %>% filter(risk_group == 'HR') %>% dplyr::select(sample))
+poor_cyto <- pull(tar_paired_clinical %>% filter(cytogenetic_risk == 'Unfavorable') %>% dplyr::select(sample))
+fav_cyto <- pull(tar_paired_clinical %>% filter(cytogenetic_risk == 'Favorable') %>% dplyr::select(sample))
+kmt2a <- pull(tar_paired_clinical %>% filter(grepl('KMT2A', Gene.Fusion)) %>% dplyr::select(sample))
+
+alive <- pull(tar_paired_clinical %>% filter(Vital.Status == "Alive") %>% dplyr::select(sample))
+dead <- pull(tar_paired_clinical %>% filter(Vital.Status == "Dead") %>% dplyr::select(sample))
+
+tar_paired_clinical_risk <- tar_paired_clinical %>%
+  dplyr::select(sample, risk_group)
+
+tar_paired_clinical %>% 
+  ggplot(mapping = aes(x = Event.Free.Survival.Time.in.Days, 
+                       y = fct_reorder(sample, Event.Free.Survival.Time.in.Days),
+                       fill = Vital.Status)) + 
+  geom_col(stat = 'identity', color = 'black') + 
+  geom_text(aes(label = Gene.Fusion, color = risk_group), hjust = 0, size = 4) +
+  theme_light() + 
+  xlim(0,1500) +
+  ylab("") +
+  xlab("Time to Relapse (days)") +
+  theme(panel.background = element_rect(fill = "transparent"),
+        title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 12, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"), 
+        legend.title = element_text(size = 12, family = "Arial", color = 'black'), 
+        legend.text = element_text(size = 12, family = "Arial", color = 'black')) +
+   geom_vline(xintercept = 365, linetype = 'dashed', size = 0.75, color = 'blue')
+
+
+
+```
+
+
+
+```{r}
+# impute missing values
+# then, merge dx and relapse log2 normalized expression
+
+tar_paired_exp_rel_mat <- tar_paired_exp %>%
+  filter(phase == 'relapse') %>%
+  unite(phase_id, phase, id, sep = "_") %>%
+  pivot_longer(cols = 2:58451,
+               names_to = 'gene_id', 
+               values_to = 'expression') %>%
+  filter(expression != 0) %>%
+  mutate(log2_exp = log2(expression)) %>%
+  dplyr::select(!expression) %>%
+  pivot_wider(names_from = gene_id,
+              values_from = log2_exp) %>%
+  column_to_rownames('phase_id') %>% 
+  t()
+
+tar_paired_exp_rel_impute <- impute.knn(tar_paired_exp_rel_mat, k = 10, rowmax = 0.5, colmax = 0.8, maxp = 1500, rng.seed=362436069)
+
+tar_paired_exp_rel_impute_df <- as.data.frame(tar_paired_exp_rel_impute$data) %>% rownames_to_column('gene_id')
+
+tar_paired_exp_diag_mat <- tar_paired_exp %>%
+  filter(phase == 'diagnosis') %>%
+  unite(phase_id, phase, id, sep = "_") %>%
+  pivot_longer(cols = 2:58451,
+               names_to = 'gene_id', 
+               values_to = 'expression') %>%
+  filter(expression != 0) %>%
+  mutate(log2_exp = log2(expression)) %>%
+  dplyr::select(!expression) %>%
+  pivot_wider(names_from = gene_id,
+              values_from = log2_exp) %>%
+  column_to_rownames('phase_id') %>% 
+  t()
+  
+tar_paired_exp_diag_impute <- impute.knn(tar_paired_exp_diag_mat, k = 10, rowmax = 0.5, colmax = 0.8, maxp = 1500, rng.seed=362436069)
+
+tar_paired_exp_diag_impute_df <- as.data.frame(tar_paired_exp_diag_impute$data) %>% rownames_to_column('gene_id')
+
+tar_paired_exp_final <- merge(tar_paired_exp_rel_impute_df, tar_paired_exp_diag_impute_df, by = 'gene_id')
+    
+tar_paired_exp_final <- tar_paired_exp_final %>%
+  column_to_rownames('gene_id') %>%
+  t() %>%
+  as.data.frame() %>%
+  rownames_to_column('phase_id') %>%
+  separate(phase_id, c('phase', 'id'), sep = '_')
+                          
+#tar_paired_exp_final_hr <- tar_paired_exp_final %>%
+#  filter(id %in% hr)
+
+# set up long df for later
+tar_paired_exp_final_long <- tar_paired_exp_final %>%
+  pivot_longer(cols = 3:37723,
+               names_to = 'gene_id',
+               values_to = 'expression') %>%
+  mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL")) 
+# write.csv(tar_paired_exp_final_long, "~/Documents/R/pedcancer/tar_paired_exp_final_long.csv", row.names = FALSE)
+ 
+#tar_paired_exp_final_hr_long <- tar_paired_exp_final_hr %>%
+#  pivot_longer(cols = 3:37723,
+#               names_to = 'gene_id',
+#               values_to = 'expression') %>%
+#  mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL")) %>%
+#  filter(gene_id %in% tar_relapse_final_hr_tab_genes)
+# write.csv(tar_paired_exp_final_long, "~/Documents/R/pedcancer/tar_paired_exp_final_long.csv", row.names = FALSE)
+```
+
+```{r}
+# lsc score in paired target expression data
+
+tar_paired_exp_final_long %>% 
+  unite(phase_id, c('phase', 'id'), sep = '_') %>%
+  pivot_wider(names_from = gene_id,
+              values_from = expression) %>% unnest()
+  
+tar_paired_exp_final_lsc <- tar_paired_exp_final %>%
+  mutate(lsc17_score = 
+           ENSG00000205336*0.0501 + ENSG00000196139*-0.0402 + ENSG00000128805*-0.0138 + ENSG00000166681*0.0465 + ENSG00000174059*0.0338 + ENSG00000105810*-0.0704 + ENSG00000088882*-0.0258 + ENSG00000088305*0.0874 + ENSG00000113657*0.0284 + ENSG00000134531*0.0146 + ENSG00000104341*0.00582 + ENSG00000138722*0.0258 + ENSG00000205978*0.00865 + ENSG00000095932*-0.0226 + ENSG00000120833*0.0271 + ENSG00000130584*-0.0347) %>%
+  mutate(plsc6_score = ENSG00000088305*0.189 + ENSG00000205336*0.054 + ENSG00000174059*0.0171 + ENSG00000120833*0.141 + ENSG00000128040*0.109) %>% dplyr::select(1,2,37724:37725) %>%
+    pivot_longer(cols = 3:4,
+               names_to = 'lsc_cat',
+               values_to = 'lsc_score')
+
+tar_paired_exp_final_lsc %>%
+  ggplot(mapping = aes(x = lsc_cat, y = lsc_score, color = phase)) + 
+  geom_jitter(position = position_dodge(width = 0.75)) + 
+  geom_boxplot(alpha = 0.5) +
+  theme_light() +
+  ylab("LSC Score") +
+  xlab("") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 12, color = "black"),
+        legend.text = element_text(family = 'Arial', size = 16, color = 'black'),
+        legend.title = element_blank())
+
+anova <- aov(lsc_score ~ phase*lsc_cat, data = tar_paired_exp_final_lsc)
+summary(anova)
+
+```
+
+
+
+```{r}
+# matrix for the DE analysis
+# filtered high risk genes
+tar_paired_exp_final_mat <- tar_paired_exp_final %>%
+                                      arrange(id) %>%
+  dplyr::select(-phase) %>%
+  dplyr::select(-id) %>%
+  t()
+
+# tar_paired_exp_final_hr_mat <- tar_paired_exp_final_hr %>%
+#                                      arrange(id) %>%
+#  dplyr::select(-phase) %>%
+#  dplyr::select(-id) %>%
+#  t()
+  
+
+# patient list and designation
+relapse_samples <- tar_paired_exp_final %>%
+  dplyr::select(id, phase) %>% arrange(id)
+  
+subject <- factor(relapse_samples$id)
+phase <- factor(relapse_samples$phase)
+
+# limma setup - for PAIRED analysis 
+  design <- model.matrix(~subject+phase)
+    fit <- lmFit(tar_paired_exp_final_mat, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tar_relapse_final_tab <- topTable(fit, sort = "none", n = Inf) %>%
+    rownames_to_column("gene_id") %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL"))
+  #Boom
+```
+
+
+```{r}
+
+#analysis
+tar_relapse_final_tab <- na.omit(tar_relapse_final_tab)
+tar_relapse_final_tab_genes <- pull(tar_relapse_final_tab %>% dplyr::select(gene_id))
+tar_relapse_final_deg <- tar_relapse_final_tab %>% 
+                          filter(adj.P.Val <= 0.05) %>% 
+                          dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP)
+
+med <- pull(tar_relapse_final_tab %>% summarise(median(phaserelapse)))
+sd <- pull(tar_relapse_final_tab %>% summarise(sd(phaserelapse)))
+
+#hr version
+# tar_relapse_final_hr_tab <- na.omit(tar_relapse_final_hr_tab)
+# tar_relapse_final_hr_tab_genes <- pull(tar_relapse_final_hr_tab %>%  dplyr::select(gene_id))
+# tar_relapse_final_hr_deg <- tar_relapse_final_hr_tab %>% 
+                          filter(adj.P.Val <= 0.05) %>% 
+                          dplyr::select(gene_id, phaserelapse, adj.P.Val, neglogP)
+
+
+# quick look at distribution and deg
+tar_relapse_final_tab %>% ggplot(mapping = aes(x = phaserelapse)) + 
+  geom_histogram(binwidth = 0.1, color = 'blue', fill = 'white') +
+  theme_light() + 
+  xlim(-6,6) + 
+    ylab("Gene Count") +
+  xlab("Expression change - phase relapse") +
+  theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = med+sd, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med-sd, linetype = 'dashed', color = 'red')
+
+# volcano plot with genes highlighted 
+tar_relapse_final_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + geom_point(alpha = 0.4) +
+             theme_light() +
+  ylab("-logFDR") +
+  xlab("Normalized Expression Change") +
+  xlim(-6,6) +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = med+sd, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med-sd, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = -log(0.05), linetype = 'dashed', color = 'red') +
+  geom_point(data = tar_relapse_final_deg %>% 
+               filter(phaserelapse >= med+sd & adj.P.Val <= 0.05 |
+                        phaserelapse <= med-sd & adj.P.Val <= 0.05),                          
+             mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), 
+                        color = 'yellow', 
+                        alpha = 0.5) 
+
+#gsea setup
+tar_deg_up_1sd <- tar_relapse_final_deg %>% filter(phaserelapse >= med+1*sd) %>% arrange(desc(phaserelapse))
+write.csv(tar_deg_up_1sd, "~/Documents/R/pedcancer/tar_deg_up_1sd.csv")
+
+tar_deg_dn_1sd <- tar_relapse_final_deg %>% filter(phaserelapse <= med-1*sd) %>% arrange(phaserelapse)
+write.csv(tar_deg_dn_1sd, "~/Documents/R/pedcancer/tar_deg_dn_1sd.csv")
+
+#gsea figure
+tar_relapse_gsea <- read.csv("~/Documents/R/pedcancer/tar_relapse_de_genes_GSEA.csv") %>% mutate(gene_set = gsub(".*\\_", "", Gene.Set.Name))
+tar_relapse_gsea %>%
+  ggplot(mapping = aes(x = k.K, y = Gene.Set.Name)) +
+    geom_segment(aes(x = 0, y = fct_reorder(Gene.Set.Name, k.K), xend = k.K, yend = Gene.Set.Name, color = direction)) +
+      facet_wrap(~direction) +
+    geom_point(mapping = aes(x = k.K, y = fct_reorder(Gene.Set.Name, k.K), size = -log(FDR.q.value))) +
+    theme_light() +
+    xlab("Enrichment Score (k/K)") +
+   ylab("") +
+        theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 12, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"),
+        strip.text = element_text(size = 16)) 
+
+#mitocarta filter
+tar_relapse_mitogenes <- tar_relapse_final_tab %>% 
+  filter(gene_id %in% mitogenes) %>%
+  mutate(dir = ifelse(phaserelapse > 0, 'up', 'down')) 
+
+# de mitogenes
+tar_relapse_de_mitogenes <- tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val) %>%
+    mutate(dir = ifelse(phaserelapse > 0, 'up', 'down'))
+
+mitogenes_up <- pull(tar_relapse_de_mitogenes %>% filter(phaserelapse > 0) %>% dplyr::select(gene_id))
+mitogenes_dn <- pull(tar_relapse_de_mitogenes %>% filter(phaserelapse < 0) %>% dplyr::select(gene_id))
+
+#de mitogenes 1sd
+tar_relapse_de_mitogenes %>% filter(phaserelapse >= med+sd)
+tar_relapse_de_mitogenes %>% filter(phaserelapse <= med-sd)
+
+mito_med = pull(tar_relapse_mitogenes %>% summarise(median(phaserelapse)))
+mito_sd = pull(tar_relapse_mitogenes %>% summarise(sd(phaserelapse)))
+
+# mitogenes 'volcano' plot
+mitogenes_vol <- tar_relapse_final_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + 
+  geom_point(alpha = 0.2) +
+  geom_point(data = tar_relapse_final_tab %>% filter(gene_id %in% mitogenes), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'yellow') + 
+  geom_point(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse >= mito_med+mito_sd), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'red') +
+  geom_point(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse <= mito_med-mito_sd), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'blue') +
+  geom_label_repel(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse >= mito_med+mito_sd), mapping = aes(x = phaserelapse, y = -log(adj.P.Val), label = gene_id), xlim = c(1,6), ylim = c(10,25), max.overlaps = 30) +
+  geom_label_repel(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse <= mito_med-mito_sd), mapping = aes(x = phaserelapse, y = -log(adj.P.Val), label = gene_id), xlim = c(-1,-6), ylim = c(10,25), max.overlaps = 30) +
+  theme_light() +
+  xlim(-6, 6) +
+  geom_vline(xintercept = mito_med+mito_sd, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = mito_med-mito_sd, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = -log(0.05), linetype = 'dashed', color = 'red') +
+    ylab("-logFDR") +
+  xlab("Relapse Expression Change") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"))
+
+
+# mitopathways at relapse
+tar_mitogenes_vec <- pull(tar_relapse_de_mitogenes %>% dplyr::select(gene_id))
+relapse_mitopaths <- mitocarta %>% mutate(pathway = str_split_fixed(mitocarta$MitoCarta3.0_MitoPathways, ">", 3)) %>% filter(Symbol %in% tar_mitogenes_vec)
+relapse_mitopaths_condensed <- relapse_mitopaths %>% dplyr::select(Symbol, pathway)
+df2 <- as.data.frame(matrix(relapse_mitopaths_condensed$pathway, ncol = 3, byrow = FALSE))
+.rowNamesDF(df2, make.names = FALSE) <- relapse_mitopaths$Symbol 
+relapse_mitopath_final <- as.data.frame(df2) %>% rownames_to_column('gene_id')
+
+
+# identify key pathways for either up or down regulated mito genes
+relapse_mitopath_final %>%
+  group_by(V2) %>%
+  filter(V2 != "") %>%
+  filter(gene_id %in% mitogenes_up) %>%
+   summarise(count = length(V2)) %>%
+    filter(count >= 2) %>%
+   ggplot(mapping = aes(x = count, y = fct_reorder(V2, count))) + geom_bar(stat = 'identity', color = 'black', fill = 'red') + 
+  theme_light() +
+  ylab("Mitocarta Pathway") +
+  xlab("DE Gene Count") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 12, color = "black"))
+
+
+# retrieve genes from pathways
+de_mitocarta <- merge(relapse_mitopath_final, tar_relapse_mitogenes, by = 'gene_id') %>%
+  mutate(direction = ifelse(gene_id %in% mitogenes_up, 'up', 'down')) %>%
+  dplyr::select(gene_id, V1, V2, V3, phaserelapse, adj.P.Val, direction)
+
+de_mitocarta %>% filter(grepl('Carbohydrate metabolism', V2))
+
+de_mitocarta_final <- de_mitocarta %>%
+  mutate(V2_new = ifelse(grepl('Translation', V2), 'Translation',
+                               ifelse(grepl('Protein homeostasis', V2), 'Protein homeostasis',
+                                            ifelse(grepl('Lipid metabolism', V2), 'Lipid metabolism',
+                                                         ifelse(grepl('Fission', V2), 'Fission',
+                                                                      ifelse(grepl('Carbohydrate metabolism', V2), 'Carbohydrate metabolism', 
+                                                                                   ifelse(grepl('Amino acid metabolism', V2), 'Amino acid metabolism', 
+                                                                                                ifelse(grepl('Vitamin metabolism', V2), 'Vitamin metabolism', 
+                                                                                                             ifelse(grepl('Trafficking', V2), 'Trafficking', 
+                                                                                                                          ifelse(grepl('SLC25A family', V2), 'SLC25A family', 
+                                                                                                                                       ifelse(grepl('Protein import and sorting', V2), 'Protein import and sorting',
+                                                                                                                                                    ifelse(grepl('OXPHOS assembly factors', V2), 'OXPHOS assembly factors',
+                                                                                                                                                                 ifelse(grepl('Nucleotide metabolism', V2), 'Nucleotide metabolism', 
+                                                                                                                                                                              ifelse(grepl('mtRNA metbaolism', V2), 'mtRNA metabolism', 
+                                                                                                                                                                                           ifelse(grepl('mtDNA maintenance', V2), 'mtDNA maintenance',
+                                                                                                                                                                                                        ifelse(grepl('Metals and cofactors', V2), 'Metals and cofactors', 
+                                                                                                                                                                                                                     ifelse(grepl('Electron carriers', V2), 'Electron carriers', 
+                                                                                                                                                                                                                                  ifelse(grepl('Detoxification', V2), 'Detoxification',
+                                                                                                                                                                                                                                               ifelse(grepl('Complex IV', V2), 'Complex IV',
+                                                                                                                                                                                                                                                            ifelse(grepl('Complex III', V2), 'Complex III',
+                                                                                                                                                                                                                                                                         ifelse(grepl('Calcium homeostasis', V2), 'Calcium homeostasis', 
+                                                                                                                                                                                                                                                                                      ifelse(grepl('Apoptosis', V2), 'Apoptosis', 
+                                                                                                                                                                                                                                                                                                   ifelse(grepl('ABC transporters', V2), 'ABC transporters', 'Other'))))))))))))))))))))))) %>%
+  dplyr::select(-`V2`) %>%
+  group_by(V2_new) %>%
+  mutate(count = length(V2_new)) %>%
+  mutate(group_med = median(phaserelapse)) %>%
+  mutate(strength = ifelse(phaserelapse >= group_med, 'high', 'low'))
+
+
+
+big_fig <- de_mitocarta_final %>%
+  filter(count >= 3) %>%
+  group_by(V2_new) %>%
+  ggplot(mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, group_med))) + 
+  geom_boxplot(mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, group_med)), alpha = 0.1, width = 0.5) +
+  geom_point(data = de_mitocarta_final %>% filter(phaserelapse >= mito_med+mito_sd & count >= 3),
+             mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, group_med)),
+             position = 'jitter', 
+             color = 'red') +
+  geom_point(data = de_mitocarta_final %>% filter(phaserelapse < mito_med+mito_sd & phaserelapse > mito_med-mito_sd & count >= 3),
+             mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, group_med)),
+             position = 'jitter', 
+             color = 'black') +
+    geom_point(data = de_mitocarta_final %>% filter(phaserelapse <= mito_med-mito_sd & count >= 3),
+             mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, group_med)),
+             position = 'jitter', 
+             color = 'blue') +
+  geom_vline(xintercept = mito_med+mito_sd, linetype = 'dashed', color = 'black') +
+    geom_vline(xintercept = mito_med-mito_sd, linetype = 'dashed', color = 'black') +
+  ylab("MitoCarta Pathway") +
+  xlab("Relapse Expression Change") +
+  theme_light() +
+  theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 12, color = "black"),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 12, color = "black"))
+
+de_mitocarta_final %>%
+  filter(phaserelapse >= mito_med+mito_sd | phaserelapse <= mito_med-mito_sd) %>%
+  view()
+
+de_mitocarta_final %>%
+  group_by(V2_new) %>%
+  filter(V2_new != 'Other') %>%
+  filter(gene_id %in% mitogenes_up) %>%
+   summarise(count = length(V2_new)) %>%
+    filter(count >= 2) %>%
+   ggplot(mapping = aes(x = count, y = fct_reorder(V2_new, count))) + geom_bar(stat = 'identity', color = 'black', fill = 'blue') + 
+  theme_light() +
+  ylab("Mitocarta Pathway") +
+  xlab("Relapse DE Gene Count") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"))
+
+de_mitocarta_final %>%
+  filter(V2_new == 'Lipid metabolism') %>% view()
+
+aml_lipid_genes <- pull(de_mitocarta_final %>%
+  filter(V2_new == 'Lipid metabolism') %>% dplyr::select(gene_id))
+
+custum_list <- c("CD36", "PDK1", "PDK4", "CRAT", "ACSL6", "ACAT1", "OXCT1", "PCCA", "ALAS2", "FECH")
+
+custom_gene_list <- pull(tar_paired_exp_final_long %>%
+                           filter(gene_id == "CD36" |
+  gene_id == "PDK1" |
+  gene_id == "PDK4" |
+  gene_id == "CRAT" |
+  gene_id == "ACSL6" |
+  gene_id == "ACAT1" |
+  gene_id == "OXCT1" | 
+  gene_id == "PCCA" |
+  gene_id == "ALAS2" | 
+  gene_id == "FECH") %>%
+    dplyr::select(gene_id))
+
+# get back to main data
+
+# tar_paired_exp_clinical <- merge(tar_paired_exp_final_long, tar_paired_clinical, by.x # = 'id', by.y = 'sample') %>% view()
+#  pivot_longer(cols = 3:37669,
+#                             names_to = 'gene_id',
+#                             values_to = 'expression') %>%
+#      mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column #= "SYMBOL")) 
+
+# write.csv(tar_paired_exp_clinical, "~/Documents/R/pedcancer/tar_paired_exp_clinical.csv")
+
+
+tar_paired_exp_final_long %>% 
+  mutate(risk_group = ifelse(id %in% lr1, 'LR1', 
+                ifelse(id %in% lr2, 'LR2', 'HR'))) %>%
+  filter(gene_id %in% custom_gene_list) %>%
+  ggplot(mapping = aes(x = factor(gene_id, 
+                  level = c("CD36", "PDK1", "PDK4", "CRAT", "ACSL6", "ACAT1", "OXCT1", "PCCA", "ALAS2", "FECH")), 
+                  y = expression, color = phase)) + 
+  geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_boxplot(alpha = 0.4) +
+  theme_light() +
+  ylab("log2 expression") + 
+  xlab("") +
+#  facet_wrap(~risk_group) +
+  theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 18, color = "black", angle = -30, hjust = 0.3, vjust = 1),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 14, color = "black"),
+        legend.text = element_text(family = "Arial", size = 18, color = 'black'),
+        legend.title = element_blank(),
+        legend.position = 'top')
+
+
+
+
+```
+
+```{r}
+
+#looking into pathways 
+
+
+# fatty acid oxidation
+fao <- c('ACAA1', 'ACAA2', 'ACADL', 'ACADM', 'ACADS', 'ACADSB', 'ACADVL', 'ACAT1', 'ACAT2', 'ACOX1', 'ACOX3', 'ACSL1', 'ACSL3', 'ACSL4', 'ACSL5', 'ACSL6', 'ADH1A', 'ADH1B', 'ADH1C', 'ADH4', 'ADH5', 'ADH6', 'ADH7', 'ADHFE1', 'ALDH1A3', 'ALDH1B1', 'ALDH2', 'ALDH3A1', 'ALDH3A2', 'ALDH7A1', 'ALDH9A1', 'CPT1A', 'CPT1B', 'CPT1C', 'CPT2', 'CYP4A11', 'CYP4A22', 'ECHS1', 'EHHADH', 'GCDH', 'HADH', 'HADHA', 'HADHB', 'HSB17B10', 'HSB17B4')
+fao_deg <- pull(tar_relapse_final_deg %>%
+  filter(gene_id %in% fao) %>% dplyr::select(gene_id))
+
+# fatty acid catabolic process go
+fa_cat_go <- read.csv("~/Documents/R/pedcancer/fa_catabolicprocess_go0009062.csv") %>% mutate(gene_id = toupper(Symbol))
+fa_cat_go_genes <- pull(fa_cat_go %>% dplyr::select(gene_id))
+
+tar_relapse_final_tab %>%
+  filter(gene_id %in% fa_cat_go_genes) %>% 
+  filter(adj.P.Val <= 0.05) %>% 
+  dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% view()
+
+tar_relapse_final_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + geom_point(alpha = 0.3) +
+  geom_point(data = tar_relapse_final_tab %>% filter(gene_id %in% fa_cat_go_genes) %>% filter(adj.P.Val <= 0.05), 
+             mapping = aes(x = phaserelapse, y = -log(adj.P.Val), color = 'yellow'))
+
+goe <- c('ACAT1', 'ALAS2', 'ALAS1', 'FECH', 'CD36', 'CPT1A', 'CPT1B')
+
+# bcaa catabolic process metabolism GO:0009083
+bcaa_cat <- c('ACAD8', 'ACADSB', 'ACAT1', 'ALDH6A1', 'AUH', 'BCAT1', 'BCAT2', 'BCKDHA', 'BCKDHB', 'BCKDK', 'DBT', 'DLD', 'HIBADH', 'HIBCH', 'HMGCL', 'HMGCLL', 'HSD17B10', 'IVD', 'MCCC2', 'SLC25A44')
+bcaa_cat_deg <- pull(tar_relapse_final_deg %>%
+  filter(gene_id %in% bcaa_cat) %>% dplyr::select(gene_id))
+
+
+# heme biosynthesis GO_0006783
+heme <- c('ALAD', 'ALAS1', 'ALAS2', 'COX10', 'CPOX', 'EARS2', 'EPRS', 'FECH', 'HMBS', 'PPOX', 'QARS', 'UROD')
+heme_deg <- pull(tar_relapse_final_deg %>%
+  filter(gene_id %in% heme) %>% dplyr::select(gene_id))
+
+# ketone ox
+keto <- c('BDH1', 'BDH2')
+
+# fa biosynthesis
+fab <- c('ACACA', 'ACACB', 'FASN', 'MCAT', 'OLAH', 'OXSM')
+
+
+tar_paired_exp_final_long %>%
+  mutate(risk_group = ifelse(id %in% lr1, 'LR1', 
+                ifelse(id %in% lr2, 'LR2', 'HR'))) %>%
+  mutate(cytogenetics = ifelse(id %in% fav_cyto, 'Favorable Cytogenetics', 
+                               ifelse(id %in% poor_cyto, 'Unfavorabe Cytogenetics', 'Other'))) %>%
+  mutate(vital_status = ifelse(id %in% alive, 'Alive', 'Dead')) %>%
+  filter(gene_id %in% fa_cat_go_genes_de) %>%
+  ggplot(mapping = aes(x = expression, y = fct_reorder(gene_id, expression), color = phase)) + 
+  geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_boxplot(alpha = 0.4) +
+  theme_light() +
+  ylab("log2 expression") + 
+  facet_wrap(~risk_group) +
+  theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 12, color = "black", angle = -30, hjust = 0, vjust = 1),
+        axis.title.y = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 12, color = "black"))
+
+
+```
+
+
+
+
+
+```{r}
+# this code is from before i learned to impute
+#normalize gene expression
+
+# log normalized
+tar_paired_exp_log <- tar_paired_exp %>% pivot_longer(cols = 3:58452,
+                                names_to = 'gene',
+                                values_to = 'expression') %>%
+  filter(expression != 0) %>%
+  mutate(log_exp = log(expression)) %>%
+  dplyr::select(-expression) %>%
+  pivot_wider(names_from = gene,
+              values_from = log_exp)
+
+tar_paired_exp_log2_final <- tar_paired_exp %>% pivot_longer(cols = 3:58452,
+                                names_to = 'gene',
+                                values_to = 'expression') %>%
+  filter(expression != 0) %>%
+  mutate(log2_exp = log2(expression)) %>%
+  dplyr::select(-expression) %>%
+  pivot_wider(names_from = id,
+              values_from = log2_exp) %>%
+  na.omit() %>%
+  pivot_longer(cols = 3:31,
+               names_to = 'id', 
+               values_to = 'log2_exp') %>%
+  pivot_wider(names_from = gene,
+              values_from = log2_exp)
+               
+
+# merge log2 transformed expression data with clinical information
+
+tar_paired_exp_log2_long <- tar_paired_exp_log2_final %>% 
+  pivot_longer(cols = 3:16079,
+               names_to = 'gene',
+               values_to = 'expression') %>%
+  mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene, keytype = "ENSEMBL", column = "SYMBOL"))
+
+tar_paired_exp_log2_long_clinical <- merge(tar_paired_exp_log2_long, target_discovery_clinical_3, by.x = 'id', by.y = 'sample') %>%
+    mutate(KMT2Ar = ifelse(grepl('KMT2A', Gene.Fusion), 'yes', 'no')) %>%
+    mutate(cytogenetic_group = ifelse(grepl('RUNX1', Gene.Fusion) | grepl('CBFB', Gene.Fusion), 'Favorable',
+                            ifelse(grepl('KMT2A-MLLT10', Gene.Fusion) | 
+                                     grepl('KMT2A-MLLT4', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT2', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT1', Gene.Fusion) |
+                                     grepl('NUP98', Gene.Fusion) | 
+                                     grepl('DEK', Gene.Fusion) |
+                                     grepl('CBFA2T3', Gene.Fusion) |
+                                     grepl('MLLT10', Gene.Fusion) |
+                                     grepl('NPM1', Gene.Fusion) |
+                                     grepl('ETV6', Gene.Fusion), 'Unfavorable', 'Other')))
+
+
+
+
+  
+```
+
+```{r}
+##################################### LIMMA
+
+# limma for PAIRED dx and relapse patients
+# will use log gene expression
+
+
+# patient list and designation
+relapse_samples <- tar_paired_exp_log2_final %>%
+  dplyr::select(id, phase) %>% arrange(id)
+  
+subject <- factor(relapse_samples$id)
+phase <- factor(relapse_samples$phase)
+
+# expression matrix
+tar_paired_exp_log2_final_mat <- as.matrix(tar_paired_exp_log2_final %>%
+                                      arrange(id) %>%
+  dplyr::select(-phase) %>%
+  dplyr::select(-id) %>%
+  t())
+ 
+# limma setup - for PAIRED analysis 
+  design <- model.matrix(~subject+phase)
+    fit <- lmFit(tar_paired_exp_log2_final_mat, design)
+    fit <- eBayes(fit)
+    results <- decideTests(fit, method = "separate", adjust.method = "fdr", p.value = 0.05, lfc = FALSE)
+    summary(results)
+    topTable(fit)
+  tar_relapse_log2_tab <- topTable(fit, sort = "none", n = Inf) %>%
+    rownames_to_column("gene_id") %>%
+    mutate(neglogP = -log(adj.P.Val)) %>%
+    mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL")) 
+
+  # remove NA values
+  tar_relapse_log2_tab <- na.omit(tar_relapse_log2_tab)
+  tar_relapse_log2_tab %>% dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% view()
+  
+  # genelist
+  genelist<- pull(tar_relapse_log2_tab %>% dplyr::select(gene_id))
+  
+  # phaserelapse distribution values
+med_phaserelapse <- pull(tar_relapse_log2_tab %>% summarise(median(phaserelapse)))
+sd_phaserelapse <- pull(tar_relapse_log2_tab %>% summarise(sd(phaserelapse)))
+
+tar_relapse_log2_tab %>% ggplot(mapping = aes(x = phaserelapse)) + geom_histogram(binwidth = 0.05, color = 'blue', fill = 'white') +
+  theme_light() + 
+  xlim(-2,2) + 
+    ylab("Gene Count") +
+  xlab("Expression change - phase relapse") +
+  theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = med_phaserelapse + sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med_phaserelapse - sd_phaserelapse, linetype = 'dashed', color = 'red')
+  
+
+#target aml de genes relapse
+tar_relapse_deg <- tar_relapse_log2_tab %>% filter(adj.P.Val<= 0.05) %>%
+    dplyr::select(gene_id, phaserelapse, adj.P.Val) %>% view()
+
+tar_relapse_log2_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + geom_point(alpha = 0.4) +
+             theme_light() +
+  ylab("-logFDR") +
+  xlab("Normalized Expression Change") +
+  xlim(-2,2) +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = med_phaserelapse + sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med_phaserelapse - sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = -log(0.05), linetype = 'dashed', color = 'red') +
+  geom_point(data = tar_relapse_deg %>% 
+               filter(phaserelapse >= med_phaserelapse+sd_phaserelapse & adj.P.Val <= 0.05 |
+                        phaserelapse <= med_phaserelapse-sd_phaserelapse & adj.P.Val <= 0.05),                          mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), 
+                        color = 'yellow', 
+                        alpha = 0.5) 
+
+
+# quantification and top de genes
+
+#up genes
+tar_relapse_deg %>% filter(phaserelapse > 0) %>% view()
+#down genes
+tar_relapse_deg %>% filter(phaserelapse < 0) %>% view()
+#up genes greater than 1sd
+tar_relapse_deg %>% filter(phaserelapse >= med_phaserelapse+sd_phaserelapse) %>% view()
+#dn genes greater than 1sd
+tar_relapse_deg %>% filter(phaserelapse <= med_phaserelapse-sd_phaserelapse) %>% view()
+
+tar_relapse_deg %>%
+  ggplot(mapping = aes(x = fct_reorder(gene_id, phaserelapse), y = phaserelapse)) + geom_point()
+
+
+#mapping top de genes back to gene expression data
+
+# change ensembl to gene symbol
+tar_paired_exp_log2_final <- tar_paired_exp_log2 %>% pivot_longer(cols = 3:44042, 
+                                    names_to = 'gene_id', 
+                                    values_to = 'expression') %>%
+   mutate(gene_id = mapIds(org.Hs.eg.db, keys = gene_id, keytype = "ENSEMBL", column = "SYMBOL")) %>%
+  filter(gene_id %in% genelist) %>%
+  pivot_wider(names_from = id, 
+              values_from = expression) %>%
+  unnest() %>%
+  column_to_rownames('gene_id')
+
+head(tar_paired_exp_log2_final)
+
+write.csv("~/Documents/R/pedcancer/tar_paired_exp_log2_final.csv", row.names = FALSE)
+
+tar_paired_exp_log2_final <- read.csv("~/Documents/R/pedcancer/tar_paired_exp_log2_final.csv")
+
+
+
+
+#test for outliers
+tar_paired_exp_log2_final %>%
+  filter(gene_id == "ACSL6" |
+           gene_id == "BCAT1" |
+           gene_id == "OXCT1" |
+           gene_id == "MMUT") %>%
+  ggplot(mapping = aes(x = phase, y = expression, fill = phase)) +   geom_violin(alpha = 0.5) +
+  geom_point(position = position_jitter(seed = 1, width = 0.2), alpha = 0.6) +
+  theme(legend.position = "none") +
+  facet_wrap(~gene_id) +
+  theme_light() +
+  ylab("log2 FKPM") +
+  xlab("") +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 14, color = "black"), 
+        strip.text.x = element_text(family = "Arial", size = 18))
+  
+
+```
+
+
+
+```{r}
+
+# relapse gene expression between early vs late relapse
+
+write.csv(early_tar_relapse_tab, "~/Documents/R/pedcancer/early_tar_relapse_tab.csv", row.names = FALSE)
+early_tar_relapse_tab <- read.csv("~/Documents/R/pedcancer/early_tar_relapse_tab.csv")
+
+write.csv(late_tar_relapse_tab, "~/Documents/R/pedcancer/late_tar_relapse_tab.csv", row.names = FALSE)
+late_tar_relapse_tab <- read.csv("~/Documents/R/pedcancer/late_tar_relapse_tab.csv")
+
+early_tar_relapse_genes <- pull(early_tar_relapse_tab %>% filter(adj.P.Val <= 0.05) %>% dplyr::select(gene_id))
+
+late_tar_relapse_genes <- pull(late_tar_relapse_tab %>% filter(adj.P.Val <= 0.05) %>% dplyr::select(gene_id))
+
+shared_tar_relapse_genes <- intersect(early_tar_relapse_genes, late_tar_relapse_genes)
+
+early_tar_relapse_genes_unique <- setdiff(early_tar_relapse_genes, late_tar_relapse_genes)
+
+late_tar_relapse_genes_unique <- setdiff(late_tar_relapse_genes, early_tar_relapse_genes)
+
+# how does the boolean work for 'both'
+tar_paired_exp_log_long_final<- tar_paired_exp_log_long_final %>%
+  mutate(de_gene_at_relapse = ifelse(gene_id %in% early_tar_relapse_genes_unique , 'early', 
+                               ifelse(gene_id %in% late_tar_relapse_genes_unique, 'late', 
+                                      ifelse(gene_id %in% shared_tar_relapse_genes, 'both', 'neither'))))
+
+tar_paired_relapse_df <- merge(tar_paired_exp_log_long_final, tar_paired_clinical, by.x = 'id',  by.y = 'sample') %>%
+  dplyr::select(id, phase, log_exp, gene_id, vital, Gene.Fusion, de_gene_at_relapse, relapse_time, cytogenetic_group)
+
+write.csv(tar_paired_relapse_df, "~/Documents/R/pedcancer/tar_paired_relapse_df.csv", row.names = FALSE)
+
+tar_paired_relapse_df <- read.csv("~/Documents/R/pedcancer/tar_paired_relapse_df.csv")
+
+tar_paired_relapse_df %>% filter(de_gene_at_relapse == "both")
+
+```
+
+
+```{r}
+
+# vizualize differential gene changes between early and late relapse
+
+tar_relapse_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + geom_point(alpha = 0.4) +
+             theme_light() +
+  ylab("-logFDR") +
+  xlab("Normalized Expression Change") +
+#  xlim(-2,2) +
+
+   geom_point(data = tar_relapse_tab %>% 
+                filter(gene_id %in% early_tar_relapse_genes_unique, 
+                       phaserelapse >= med_phaserelapse+sd_phaserelapse |
+                         phaserelapse <= med_phaserelapse-sd_phaserelapse, 
+                       adj.P.Val <= 0.05), 
+             mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), alpha = 0.4, 
+                           color = 'yellow') +
+    theme(panel.background = element_rect(fill = "transparent"),
+          title = element_text(family = "Arial", size = 12),
+        axis.line = element_line(linetype = "solid", size = 0.5, color = 'black'),
+        axis.title.x = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 18, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black")) +
+   geom_vline(xintercept = med_phaserelapse + sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med_phaserelapse - sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = -log(0.05), linetype = 'dashed', color = 'red')
+
+
+early_tar_relapse_unique <- pull(tar_relapse_tab %>% 
+                filter(gene_id %in% early_tar_relapse_genes_unique, 
+                       phaserelapse >= med_phaserelapse+sd_phaserelapse,  
+                       adj.P.Val <= 0.05) %>%
+                  arrange(desc(phaserelapse)) %>%
+                  dplyr::select(gene_id))
+
+```
+
+
+```{r}
+#heatmap of top de genes
+
+#genes to use
+heatmap_genelist <- pull(tar_relapse_deg %>% filter(phaserelapse >= med_phaserelapse+sd_phaserelapse | phaserelapse <= med_phaserelapse-sd_phaserelapse) %>%
+  dplyr::select(gene_id))
+
+#matrix
+heatmap_matrix <- as.matrix(tar_paired_exp_log_long_final %>% 
+                              filter(gene_id %in% heatmap_genelist) %>%
+                              filter(id %in% dead) %>%
+                              unite(sample, id:phase, remove = TRUE) %>%
+                              pivot_wider(names_from = sample,
+                                          values_from = log_exp) %>%
+                              column_to_rownames('gene_id') %>%
+                              unnest())
+
+tar_relapse_heatmap <- pheatmap(heatmap_matrix, show_rownames = TRUE,  scale = 'row')
+                              
+
+# PCA of samples
+
+heatmap_matrix <- na.omit(heatmap_matrix) %>% t()
+
+sample_ids <- tar_paired_exp_log_long_final %>% 
+                              filter(gene_id %in% heatmap_genelist) %>%
+                              filter(id %in% alive) %>%
+                              unite(sample, id:phase, remove = TRUE) %>%
+                              pivot_wider(names_from = sample,
+                                          values_from = log_exp) %>%
+                              column_to_rownames('gene_id') %>%
+                              t() %>%
+                              as.data.frame() %>%
+                              rownames_to_column('sample') %>%
+                              mutate(phase = ifelse(grepl("diagnosis", sample), 'diagnosis', 'relapse')) %>%
+  dplyr::select(sample, phase)
+
+pca <- prcomp(heatmap_matrix, scale = TRUE)
+
+fviz_eig(pca)
+fviz_pca_ind(pca, 
+             col.ind = sample_ids$phase, 
+             geom = 'text')
+fviz_pca_var(pca)
+             
+```
+
+```{r}
+
+#umap of samples
+
+# write.csv(tar_paired_exp_log_final, "~/Documents/R/pedcancer/tar_paired_exp_log_final.csv", row.names = FALSE)
+
+tar_paired_exp_log_final <- read.csv("~/Documents/R/pedcancer/tar_paired_exp_log_final.csv")
+
+tar_paired_exp_clinical <- merge(tar_paired_exp_log_final, target_discovery_clinical_3, by.x = 'id', by.y = 'sample') %>% dplyr::select(id, phase, Risk.group, Primary.Cytogenetic.Code, Gene.Fusion)
+
+# kmt2a <- pull(tar_paired_exp_clinical %>% filter(grepl("KMT2A", Gene.Fusion)) %>% dplyr::select(id))
+
+
+umap_data <- tar_paired_exp_log_final %>%
+  unite(sample, id:phase, remove = TRUE) %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse')) %>% head()
+  dplyr::select(-phase) %>%
+  column_to_rownames('sample')
+
+rownames(umap_data) <- umap_labels$phase
+
+umap_relapse <- umap(umap_data)
+
+umap_relapse_df <- as.data.frame(umap_relapse$layout) %>% 
+  rownames_to_column('sample') %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse'))
+
+umap_relapse_df %>%
+  ggplot(mapping = aes(x = V1, y = V2)) + geom_point() + 
+  geom_point(mapping = aes(color = phase))
+
+
+```
+
+```{r}
+
+#top 500 for gsea
+tar_relapse_500up <- tar_relapse_deg %>% arrange(desc(phaserelapse)) %>% head(501) 
+write.csv(tar_relapse_500up, "~/Documents/R/pedcancer/tar_relapse_500up.csv")
+tar_relapse_500dn <- tar_relapse_deg %>% arrange(phaserelapse) %>% head(500) 
+write.csv(tar_relapse_500dn, "~/Documents/R/pedcancer/tar_relapse_500dn.csv")
+
+#gsea
+tar_relapse_gsea <- read.csv("~/Documents/R/pedcancer/tar_relapse_de_genes_GSEA.csv")
+tar_relapse_gsea %>%
+  ggplot(mapping = aes(x = k.K, y = Gene.Set.Name)) +
+    geom_segment(aes(x = 0, y = fct_reorder(Gene.Set.Name, k.K), xend = k.K, yend = Gene.Set.Name, color = group)) +
+      facet_wrap(~group) +
+    geom_point(mapping = aes(x = k.K, y = fct_reorder(Gene.Set.Name, k.K), size = FDR.q.value)) +
+    theme_light() +
+    xlab("GSEA Enrichment Score (k/K)") +
+   ylab("") +
+        theme(axis.title.x = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 10, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 12, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 10, color = "black"),
+        strip.text = element_text(size = 12)) 
+
+```
+
+
+
+```{r}
+#mitocarta filter
+tar_relapse_mitogenes <- tar_relapse_log2_tab %>% 
+  filter(gene_id %in% mitogenes) %>%
+  mutate(dir = ifelse(phaserelapse > 0, 'up', 'down')) 
+
+# de mitogenes
+tar_relapse_de_mitogenes <- tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05) %>% dplyr::select(gene_id, phaserelapse, adj.P.Val) %>%
+    mutate(dir = ifelse(phaserelapse > 0, 'up', 'down'))
+
+mitogenes_up <- pull(tar_relapse_de_mitogenes %>% filter(phaserelapse > 0) %>% dplyr::select(gene_id))
+mitogenes_dn <- pull(tar_relapse_de_mitogenes %>% filter(phaserelapse < 0) %>% dplyr::select(gene_id))
+
+#de mitogenes 1sd
+tar_relapse_de_mitogenes %>% filter(phaserelapse >= med_phaserelapse+sd_phaserelapse) %>% view()
+tar_relapse_de_mitogenes %>% filter(phaserelapse <= med_phaserelapse-sd_phaserelapse)
+
+# mitogenes 'volcano' plot
+mitogenes_vol <- tar_relapse_log2_tab %>%
+  ggplot(mapping = aes(x = phaserelapse, y = -log(adj.P.Val))) + 
+  geom_point(alpha = 0.2) +
+  geom_point(data = tar_relapse_log2_tab %>% filter(gene_id %in% mitogenes), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'yellow') + 
+  geom_point(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse >= med_phaserelapse+sd_phaserelapse), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'red') +
+  geom_point(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse <= med_phaserelapse-sd_phaserelapse), mapping = aes(x = phaserelapse, y = -log(adj.P.Val)), color = 'blue') +
+  geom_label_repel(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse >= med_phaserelapse+sd_phaserelapse), mapping = aes(x = phaserelapse, y = -log(adj.P.Val), label = gene_id), xlim = c(0.5,2), ylim = c(5,20), max.overlaps = 25) +
+  geom_label_repel(data = tar_relapse_mitogenes %>% filter(adj.P.Val <= 0.05 & phaserelapse <= med_phaserelapse-sd_phaserelapse), mapping = aes(x = phaserelapse, y = -log(adj.P.Val), label = gene_id), xlim = c(-2,-0.5), ylim = c(5,20), max.overlaps = 20) +
+  theme_light() +
+  xlim(-2, 2) +
+  geom_vline(xintercept = med_phaserelapse + sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_vline(xintercept = med_phaserelapse - sd_phaserelapse, linetype = 'dashed', color = 'red') +
+   geom_hline(yintercept = -log(0.05), linetype = 'dashed', color = 'red') +
+    ylab("-logFDR") +
+  xlab("Relapse Expression Change") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 14, color = "black"))
+
+
+# mitopathways at relapse
+tar_mitogenes_vec <- pull(tar_relapse_de_mitogenes %>% dplyr::select(gene_id))
+relapse_mitopaths <- mitocarta %>% mutate(pathway = str_split_fixed(mitocarta$MitoCarta3.0_MitoPathways, ">", 3)) %>% filter(Symbol %in% tar_mitogenes_vec)
+relapse_mitopaths_condensed <- relapse_mitopaths %>% dplyr::select(Symbol, pathway)
+df2 <- as.data.frame(matrix(relapse_mitopaths_condensed$pathway, ncol = 3, byrow = FALSE))
+.rowNamesDF(df2, make.names = FALSE) <- relapse_mitopaths$Symbol 
+relapse_mitopath_final <- as.data.frame(df2) %>% rownames_to_column('gene_id')
+
+
+# identify key pathways for either up or down regulated mito genes
+relapse_mitopath_final %>%
+  group_by(V2) %>%
+  filter(V2 != "") %>%
+  filter(gene_id %in% mitogenes_up) %>%
+   summarise(count = length(V2)) %>%
+    filter(count >= 2) %>%
+   ggplot(mapping = aes(x = count, y = fct_reorder(V2, count))) + geom_bar(stat = 'identity', color = 'black', fill = 'red') + 
+  theme_light() +
+  ylab("Mitocarta Pathway") +
+  xlab("DE Gene Count") +
+   theme(panel.background = element_rect(fill = "transparent"),
+        axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 16, color = "black"), 
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial",, size = 12, color = "black"))
+
+
+# retrieve genes from pathways
+de_mitocarta <- merge(relapse_mitopath_final, tar_relapse_mitogenes, by = 'gene_id') %>%
+  mutate(direction = ifelse(gene_id %in% mitogenes_up, 'up', 'down')) %>%
+  dplyr::select(gene_id, V1, V2, V3, phaserelapse, adj.P.Val, direction) %>% view()
+
+de_mitocarta %>% filter(grepl('Carbohydrate metabolism', V2)) %>% view()
+
+de_mitocarta_final <- de_mitocarta %>%
+  group_by(V2) %>%
+  mutate(count = length(V2)) %>%
+  mutate(med = median(phaserelapse)) %>%
+  mutate(strength = ifelse(phaserelapse >= med, 'high', 'low'))
+
+big_fig_exgenes <- pull(de_mitocarta_final %>% filter(phaserelapse >= med_phaserelapse+sd_phaserelapse) %>% dplyr::select(gene_id))
+
+big_fig <- de_mitocarta_final %>% 
+  filter(count >= 3) %>%
+  filter(V2 != "") %>%
+  ggplot(mapping = aes(x = phaserelapse, y = fct_reorder(V2, med))) + 
+  geom_boxplot(mapping = aes(x = phaserelapse, y = fct_reorder(V2, med)), alpha = 0.1, width = 0.5) +
+  geom_point(data = de_mitocarta_final %>% filter(phaserelapse >= med & count >= 3 & V2 != ""),
+             mapping = aes(x = phaserelapse, y = fct_reorder(V2, med)),
+             position = 'jitter', 
+             color = 'red') +
+  geom_point(data = de_mitocarta_final %>% filter(phaserelapse < med & count >= 3 & V2 != ""),
+             mapping = aes(x = phaserelapse, y = fct_reorder(V2, med)),
+             position = 'jitter', 
+             color = 'black') +
+#  geom_label_repel(data = de_mitocarta_final %>% filter(gene_id %in% big_fig_exgenes & count >= 3 & V2 != ""),
+#            mapping = aes(x = phaserelapse, y = fct_reorder(V2, med), 
+#             label = gene_id),
+#             max.overlaps = 100) +
+  ylab("MitoCarta Pathway") +
+  xlab("FC Relapse") +
+  theme_light() +
+  theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 12, color = "black"),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 12, color = "black"))
+
+```
+
+
+```{r}
+
+# reexamine big fig
+
+de_mitocarta_final_2 <- de_mitocarta_final %>%
+  mutate(V2_new = ifelse(grepl('Translation', V2), 'Translation',
+                               ifelse(grepl('Protein homeostasis', V2), 'Protein homeostasis',
+                                            ifelse(grepl('Lipid metabolism', V2), 'Lipid metabolism',
+                                                         ifelse(grepl('Fission', V2), 'Fission',
+                                                                      ifelse(grepl('Carbohydrate metabolism', V2), 'Carbohydrate metabolism', 
+                                                                                   ifelse(grepl('Amino acid metabolism', V2), 'Amino acid metabolism', 
+                                                                                                ifelse(grepl('Vitamin metabolism', V2), 'Vitamin metabolism', 
+                                                                                                             ifelse(grepl('Trafficking', V2), 'Trafficking', 
+                                                                                                                          ifelse(grepl('SLC25A family', V2), 'SLC25A family', 
+                                                                                                                                       ifelse(grepl('Protein import and sorting', V2), 'Protein import and sorting',
+                                                                                                                                                    ifelse(grepl('OXPHOS assembly factors', V2), 'OXPHOS assembly factors',
+                                                                                                                                                                 ifelse(grepl('Nucleotide metabolism', V2), 'Nucleotide metabolism', 
+                                                                                                                                                                              ifelse(grepl('mtRNA metbaolism', V2), 'mtRNA metabolism', 
+                                                                                                                                                                                           ifelse(grepl('mtDNA maintenance', V2), 'mtDNA maintenance',
+                                                                                                                                                                                                        ifelse(grepl('Metals and cofactors', V2), 'Metals and cofactors', 
+                                                                                                                                                                                                                     ifelse(grepl('Electron carriers', V2), 'Electron carriers', 
+                                                                                                                                                                                                                                  ifelse(grepl('Detoxification', V2), 'Detoxification',
+                                                                                                                                                                                                                                               ifelse(grepl('Complex IV', V2), 'Complex IV',
+                                                                                                                                                                                                                                                            ifelse(grepl('Complex III', V2), 'Complex III',
+                                                                                                                                                                                                                                                                         ifelse(grepl('Calcium homeostasis', V2), 'Calcium homeostasis', 
+                                                                                                                                                                                                                                                                                      ifelse(grepl('Apoptosis', V2), 'Apoptosis', 
+                                                                                                                                                                                                                                                                                                   ifelse(grepl('ABC transporters', V2), 'ABC transporters', 'Other'))))))))))))))))))))))) %>%
+  dplyr::select(-`V2`)
+
+de_mitocarta_final_2 %>%
+  group_by(V2_new) %>%
+  filter(V2_new != 'Other') %>%
+  ggplot(mapping = aes(x = phaserelapse, y = fct_reorder(V2_new, med))) + 
+  geom_jitter() +
+  geom_boxplot(alpha = 0.3, color = 'gray') +
+  theme_light() + 
+  geom_vline(xintercept = med_phaserelapse, linetype = 'dashed', color = 'red') + 
+  geom_vline(xintercept = med_phaserelapse+sd_phaserelapse, linetype = 'dashed', color = 'red') +
+  geom_vline(xintercept = med_phaserelapse-sd_phaserelapse, linetype = 'dashed', color = 'red') 
+  
+de_mitocarta_final_2 %>%
+  filter(V2_new == 'Amino acid metabolism') %>% 
+  dplyr::select(V2_new, gene_id, phaserelapse, adj.P.Val, direction) %>% view()
+
+```
+
+```{r}
+
+# look for mitogenes increasing in specific genomic subtypes
+de_mitogenes_lipid_up <- pull(de_mitocarta_final_2 %>% filter(V2_new == "Lipid metabolism") %>% filter(strength == "high") %>% filter(direction == 'up') %>% dplyr::select(gene_id))
+
+# explore positive regulation fatty acid oxidation GO
+#positive regulation of fatty acid oxidation
+#GO:0046321
+go_fao_regulation <- c("ABCD1", "ABCD2", "ACSL5", "AKT2", "C1QTNF2", "CPT1A", "DGAT1", "FABP1", "IRS1", "IRS2", "KLHL25", "MLYCD", "MTLN", "NR4A3", "NUCB2", "OBP2A", "PLIN5", "PPARA", "PPARD", "PPARG", "PPARGC1A", "TWIST1")
+
+go_fao <- c("ABCB11", "ABCD1", "ABCD2", "ABCD3", "ABCD3", "ABCD4", "ACAA1A", "ACAA1B", 'ACAA2', 'ACACAB', 'ACAD10', 'ACAD11', 'ACAD12', 'ACADL', 'ACADM', 'ACADS', 'ACADVL', 'ACAT1', 'ACAT2', 'ACAT3', 'ACOX1', 'ACOX2', 'ACOX3', 'ACOXL', 'ACSBG2', 'ACSL5', 'ADH4', 'ADH5', 'ADH7', 'ADIPOQ', 'ADIPOR1', 'ADIPOR2', 'AKT1', 'AKT2', 'ALDH1L2', 'ALOX12', 'APPL2', 'AUH', 'BDH2', 'C1QTNF2', 'C1QTNF9', 'CNR1', 'CPT1A', 'CPT2', 'CRAT', 'CROT', 'CYGB', 'CYP4F13', 'CYP4F18', 'CYP4V3', 'DBI', 'DECR1', 'DGAT1', 'DGAT2', 'ECHDC1', 'ECHDC2', 'ECHS1', 'ECI1', 'ECI2', 'ECI3', 'ETFA', 'ETFB', 'ETFDH', 'FABP1', 'FABP3', 'FMO1', 'FMO2', 'FMO4', 'GCDH', 'HACL1', 'HADH', 'HADHA', 'HADHB', 'HAO1', 'HAO2', 'HSD17B4', 'HSD17B10', 'ILVBL', 'IRS1', 'IRS2', 'IVD', 'KLHL25', 'LEP', 'LNCFAO', 'LONP2', 'MAPK14', 'MFSD2A', 'MLYCD', 'MTLN', 'MTOR', 'NR4A3', 'NUCB2', 'OBP2A', 'PDK4', 'PEX2', 'PEX5', 'PEX7', 'PEX13', 'PHYH', 'PLIN5', 'POR', 'PPARA', 'PPARD', 'PPARG', 'PPARGC1A', 'PRKAA1', 'SCP2', 'SESN2', 'SIRT4', 'SLC25A17', 'SLC27A2', 'SOX9', 'TWIST1', 'TYSND1')
+
+tar_paired_exp_log2_long_clinical %>% 
+  mutate(KMT2Ar = ifelse(grepl('KMT2A', Gene.Fusion), 'yes', 'no')) %>%
+    mutate(cytogenetic_group = ifelse(grepl('RUNX1', Gene.Fusion) | grepl('CBFB', Gene.Fusion), 'Favorable',
+                            ifelse(grepl('KMT2A-MLLT10', Gene.Fusion) | 
+                                     grepl('KMT2A-MLLT4', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT2', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT1', Gene.Fusion) |
+                                     grepl('NUP98', Gene.Fusion) | 
+                                     grepl('DEK', Gene.Fusion) |
+                                     grepl('CBFA2T3', Gene.Fusion) |
+                                     grepl('MLLT10', Gene.Fusion) |
+                                     grepl('NPM1', Gene.Fusion) |
+                                     grepl('ETV6', Gene.Fusion), 'Unfavorable', 'Other'))) %>%
+  filter(gene_id == "BDH1" |
+           gene_id == "BDH2" |
+           gene_id == "OXCT1" |
+           gene_id == "ACAT1" |
+           gene_id == "SUCLG2" |
+           gene_id == "SDHA" |
+           gene_id == "SDHB" |
+           gene_id == "UBTF") %>%
+  ggplot(mapping = aes(x = expression, y = gene_id, color = phase)) + geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_boxplot(alpha = 0.4) +
+  facet_wrap(~cytogenetic_group)
+
+# can also try to visualize best genes to study in kmt2a apriori
+tar_paired_exp_log2_long_clinical %>% 
+  mutate(KMT2Ar = ifelse(grepl('KMT2A', Gene.Fusion), 'yes', 'no')) %>%
+  filter(gene_id == "ACADVL") %>%
+  ggplot(mapping = aes(x = expression, y = gene_id, color = phase)) + geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_boxplot(alpha = 0.4) 
+
+
+fao_mat <- as.matrix(tar_paired_exp_log2_long %>%
+  na.omit() %>%
+ # filter(grepl("CPT", gene_id)) %>%
+  unite(phase_id, c(id, phase), sep = "_", remove = TRUE) %>%
+  dplyr::select(gene_id, expression, phase_id) %>%
+  pivot_wider(names_from = gene_id, 
+              values_from = expression) %>%
+  unnest(cols = 2:77) %>%
+  column_to_rownames('phase_id'))
+
+pheatmap <- pheatmap(fao_mat, cluster_rows = FALSE, scale = 'row')
+
+```
+
+
+
+
+```{r}
+# paired mirna
+
+PARDDY_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARDDY-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARDDY_relapse = reads_per_million_miRNA_mapped)
+
+PARDDY_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARDDY-09A-04R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARDDY_diagnosis = reads_per_million_miRNA_mapped)
+
+PARFAL_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARFAL-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARFAL_relapse = reads_per_million_miRNA_mapped)
+
+PARFAL_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARFAL-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARFAL_diagnosis = reads_per_million_miRNA_mapped)
+
+PARUNX_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARUNX-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARUNX_relapse = reads_per_million_miRNA_mapped)
+
+PARUNX_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARUNX-09A-04R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARUNX_diagnosis = reads_per_million_miRNA_mapped)
+
+PASGWH_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASGWH-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASGWH_relapse = reads_per_million_miRNA_mapped)
+
+PASGWH_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASGWH-09A-04R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASGWH_diagnosis = reads_per_million_miRNA_mapped)
+
+PASHYZ_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASHYZ-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASHYZ_relapse = reads_per_million_miRNA_mapped)
+
+PASHYZ_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASHYZ-09A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASHYZ_diagnosis = reads_per_million_miRNA_mapped)
+
+PASWAJ_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASWAJ-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASWAJ_relapse = reads_per_million_miRNA_mapped)
+
+PASWAJ_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASWAJ-09A-04R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASWAJ_diagnosis = reads_per_million_miRNA_mapped)
+
+PATDNN_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATDNN-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PATDNN_relapse = reads_per_million_miRNA_mapped)
+
+PATDNN_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATDNN-09A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PATDNN_diagnosis = reads_per_million_miRNA_mapped)
+
+PABLDZ_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PABLDZ-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PABLDZ_relapse = reads_per_million_miRNA_mapped)
+
+PABLDZ_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PABLDZ-09A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PABLDZ_diagnosis = reads_per_million_miRNA_mapped)
+
+PAECCE_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAECCE-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAECCE_relapse = reads_per_million_miRNA_mapped)
+
+PAECCE_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAECCE-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAECCE_diagnosis = reads_per_million_miRNA_mapped)
+
+PAEIKD_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEIKD-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAEIKD_relapse = reads_per_million_miRNA_mapped)
+
+PAEIKD_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAEIKD-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAEIKD_diagnosis = reads_per_million_miRNA_mapped)
+
+PAKERZ_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKERZ-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKERZ_relapse = reads_per_million_miRNA_mapped)
+
+PAKERZ_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKERZ-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKERZ_diagnosis = reads_per_million_miRNA_mapped)
+
+PAKIWK_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKIWK-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKIWK_relapse = reads_per_million_miRNA_mapped)
+
+PAKIWK_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKIWK-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKIWK_diagnosis = reads_per_million_miRNA_mapped)
+
+PAKTCX_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKTCX-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKTCX_relapse = reads_per_million_miRNA_mapped)
+
+PAKTCX_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAKTCX-09A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAKTCX_diagnosis = reads_per_million_miRNA_mapped)
+
+PAMYAS_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAMYAS-04A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAMYAS_relapse = reads_per_million_miRNA_mapped)
+
+PAMYAS_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAMYAS-09A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAMYAS_diagnosis = reads_per_million_miRNA_mapped)
+
+PAPXRJ_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAPXRJ-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAPXRJ_relapse = reads_per_million_miRNA_mapped)
+
+PAPXRJ_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PAPXRJ-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PAPXRJ_diagnosis = reads_per_million_miRNA_mapped)
+
+PARBIU_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARBIU-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARBIU_relapse = reads_per_million_miRNA_mapped)
+
+PARBIU_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARBIU-09A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARBIU_diagnosis = reads_per_million_miRNA_mapped)
+
+PARYVW_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARYVW-04A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARYVW_relapse = reads_per_million_miRNA_mapped)
+
+PARYVW_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PARYVW-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PARYVW_diagnosis = reads_per_million_miRNA_mapped)
+
+PASPLU_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASPLU-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASPLU_relapse = reads_per_million_miRNA_mapped)
+
+PASPLU_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASPLU-09A-02R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASPLU_diagnosis = reads_per_million_miRNA_mapped)
+
+PASVVS_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVVS-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASVVS_relapse = reads_per_million_miRNA_mapped)
+
+PASVVS_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVVS-09A-03R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASVVS_diagnosis = reads_per_million_miRNA_mapped)
+
+PASVYA_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVYA-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASVYA_relapse = reads_per_million_miRNA_mapped)
+
+PASVYA_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PASVYA-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PASVYA_diagnosis = reads_per_million_miRNA_mapped)
+
+PATIAK_relapse_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATIAK-04A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PATIAK_relapse = reads_per_million_miRNA_mapped)
+
+PATIAK_diagnosis_mirna <- read.table(url("https://target-data.nci.nih.gov/Public/AML/miRNA-seq/L3/expression/BCCA/TARGET-NCI/TARGET-20-PATIAK-09A-01R.mirna.quantification.txt"), header = TRUE) %>% dplyr::select(miRNA_ID, reads_per_million_miRNA_mapped) %>% dplyr::rename(PATIAK_diagnosis = reads_per_million_miRNA_mapped)
+
+
+
+df_list_mirna <- list(PARDDY_relapse_mirna,
+                      PARDDY_diagnosis_mirna,
+                      PARFAL_relapse_mirna,
+                      PARFAL_diagnosis_mirna,
+                      PARUNX_relapse_mirna,
+                      PARUNX_diagnosis_mirna,
+                      PASGWH_relapse_mirna,
+                      PASGWH_diagnosis_mirna,
+                      PASHYZ_relapse_mirna,
+                      PASHYZ_diagnosis_mirna,
+                      PASWAJ_relapse_mirna,
+                      PASWAJ_diagnosis_mirna,
+                      PATDNN_relapse_mirna,
+                      PATDNN_diagnosis_mirna,
+                      PABLDZ_relapse_mirna,
+                      PABLDZ_diagnosis_mirna,
+                      PAECCE_relapse_mirna,
+                      PAECCE_diagnosis_mirna,
+                      PAEIKD_relapse_mirna,
+                      PAEIKD_diagnosis_mirna,
+                      PAKERZ_relapse_mirna,
+                      PAKERZ_diagnosis_mirna,
+                      PAKIWK_relapse_mirna,
+                      PAKIWK_diagnosis_mirna,
+                      PAKTCX_relapse_mirna,
+                      PAKTCX_diagnosis_mirna,
+                      PAMYAS_relapse_mirna,
+                      PAMYAS_diagnosis_mirna,
+                      PAPXRJ_relapse_mirna,
+                      PAPXRJ_diagnosis_mirna,
+                      PARBIU_relapse_mirna,
+                      PARBIU_diagnosis_mirna,
+                      PARYVW_relapse_mirna,
+                      PARYVW_diagnosis_mirna,
+                      PASPLU_relapse_mirna,
+                      PASPLU_diagnosis_mirna,
+                      PASVVS_relapse_mirna,
+                      PASVVS_diagnosis_mirna,
+                      PASVYA_relapse_mirna,
+                      PASVYA_diagnosis_mirna,
+                      PATIAK_relapse_mirna,
+                      PATIAK_diagnosis_mirna)
+
+
+# then reduce to single df
+df_list_mirna_reduced <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_mirna) 
+
+# pivot longer and add phase column
+
+tar_paired_mirna <- df_list_mirna_reduced %>%
+  pivot_longer(cols = 2:43,
+               names_to = 'sample',
+               values_to = 'mirna') %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse'))
+
+write.csv(tar_paired_mirna, "~/Documents/R/pedcancer/tar_paired_mirna.csv")
+
+tar_paired_mirna <- read.csv("~/Documents/R/pedcancer/tar_paired_mirna.csv")
+
+tar_paired_mirna %>% pivot_wider(names_from = miRNA_ID,
+                                 values_from = mirna) %>% 
+  dplyr::select(1:10)
+
+```
+
+```{r}
+
+# paired methylation - there are different codes to download the 450k and 27k affymetrix arrays from target website
+#as a general rule, we will use probe IDs instead of gene name bc multiple probes per gene
+
+#example of one
+pt1_cpg <- read.csv("~/Documents/R/pedcancer/target_data/TARGET_100/cpg/PADZKD.csv", header = TRUE)
+pt1_cpg$sample <- str_replace_all(pt1_cpg$Sample.ID, "TARGET-20-PADZKD-09A-01D", "PADZKD")
+pt1_cpg <- pt1_cpg %>% dplyr::select(-Sample.ID)
+pt1_tss <- pt1_cpg %>%
+  filter(Probe.Name %in% illumina_tss_2) %>%
+  dplyr::select(AVG_Beta, Gene.Symbols, sample) %>%
+  pivot_wider(names_from = sample,
+              values_from = AVG_Beta) %>% unnest() %>%
+  group_by(Gene.Symbols) %>%
+  summarise(PADZKD = median(PADZKD))
+
+#example of other
+#path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PADZCG-09A-01D_450k_L3.txt"
+#data <- vroom::vroom(path, delim = "\t", skip = 1) 
+#colnames(data) <- c("Probe.Name", "AVG_Beta", "Gene.Symbols", "Chromosome", "Position")
+#data$sample <- ("PADZCG")
+
+#path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PABLDZ-09A-03D_450k_L3.txt"
+#pt51_cpg <- vroom::vroom(path, delim = "\t", skip = 1) 
+#colnames(pt51_cpg) <- c("Probe.Name", "AVG_Beta", "Gene.Symbols", "Chromosome", "Position")
+#pt51_cpg$sample <- ("PABLDZ")
+#pt51_tss <- pt51_cpg %>%
+#  filter(Probe.Name %in% illumina_tss_2) %>%
+#  dplyr::select(AVG_Beta, Gene.Symbols, sample) %>%
+#  pivot_wider(names_from = sample,
+#              values_from = AVG_Beta) %>% unnest() %>%
+#  mutate(Gene.Symbols = gsub("\\;.*", "", Gene.Symbols)) %>%
+#  dplyr:: select(PABLDZ, Gene.Symbols) %>%
+#  group_by(Gene.Symbols) %>%
+#  summarise(PABLDZ = median(PABLDZ))
+
+######
+
+# need to merge 27k and 450k methylation arrays -
+
+probes_27k <- pull(PARDDY_relapse_meth %>% dplyr::select(Probe.Name)) # will filter 450k data frames for this set
+
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARDDY-04A-01D_27k_L3.txt"
+PARDDY_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARDDY_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PARDDY_relapse", "Gene.Symbols", "Chromosome", "Position")
+PARDDY_relapse_meth <- PARDDY_relapse_meth %>% dplyr::select(Probe.Name, PARDDY_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARDDY-09A-01D_27k_L3.txt"
+PARDDY_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARDDY_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PARDDY_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PARDDY_diagnosis_meth <- PARDDY_diagnosis_meth %>% dplyr::select(Probe.Name, PARDDY_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARFAL-04A-01D_27k_L3.txt"
+PARFAL_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARFAL_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PARFAL_relapse", "Gene.Symbols", "Chromosome", "Position")
+PARFAL_relapse_meth <- PARFAL_relapse_meth %>% dplyr::select(Probe.Name, PARFAL_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARFAL-09A-02D_27k_L3.txt"
+PARFAL_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARFAL_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PARFAL_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PARFAL_diagnosis_meth <- PARFAL_diagnosis_meth %>% dplyr::select(Probe.Name, PARFAL_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARUNX-04A-01D_27k_L3.txt"
+PARUNX_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARUNX_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PARUNX_relapse", "Gene.Symbols", "Chromosome", "Position")
+PARUNX_relapse_meth <- PARUNX_relapse_meth %>% dplyr::select(Probe.Name, PARUNX_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARUNX-09A-01D_27k_L3.txt"
+PARUNX_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARUNX_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PARUNX_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PARUNX_diagnosis_meth <- PARUNX_diagnosis_meth %>% dplyr::select(Probe.Name, PARUNX_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASGWH-04A-02D_27k_L3.txt"
+PASGWH_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASGWH_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PASGWH_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASGWH_relapse_meth <- PASGWH_relapse_meth %>% dplyr::select(Probe.Name, PASGWH_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASGWH-09A-02D_27k_L3.txt"
+PASGWH_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASGWH_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PASGWH_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASGWH_diagnosis_meth <- PASGWH_diagnosis_meth %>% dplyr::select(Probe.Name, PASGWH_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASHYZ-04A-02D_27k_L3.txt"
+PASHYZ_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASHYZ_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PASHYZ_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASHYZ_relapse_meth <- PASHYZ_relapse_meth %>% dplyr::select(Probe.Name, PASHYZ_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASHYZ-09A-01D_27k_L3.txt"
+PASHYZ_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASHYZ_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PASHYZ_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASHYZ_diagnosis_meth <- PASHYZ_diagnosis_meth %>% dplyr::select(Probe.Name, PASHYZ_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASWAJ-04A-02D_27k_L3.txt"
+PASWAJ_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASWAJ_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PASWAJ_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASWAJ_relapse_meth <- PASWAJ_relapse_meth %>% dplyr::select(Probe.Name, PASWAJ_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASWAJ-09A-01D_27k_L3.txt"
+PASWAJ_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASWAJ_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PASWAJ_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASWAJ_diagnosis_meth <- PASWAJ_diagnosis_meth %>% dplyr::select(Probe.Name, PASWAJ_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PATDNN-04A-01D_27k_L3.txt"
+PATDNN_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PATDNN_relapse_meth) <- c("TARGET_ID", "Probe.Name", "PATDNN_relapse", "Gene.Symbols", "Chromosome", "Position")
+PATDNN_relapse_meth <- PATDNN_relapse_meth %>% dplyr::select(Probe.Name, PATDNN_relapse) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PATDNN-09A-01D_27k_L3.txt"
+PATDNN_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PATDNN_diagnosis_meth) <- c("TARGET_ID", "Probe.Name", "PATDNN_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PATDNN_diagnosis_meth <- PATDNN_diagnosis_meth %>% dplyr::select(Probe.Name, PATDNN_diagnosis) %>%
+filter(Probe.Name %in% probes_27k_reduced)  
+
+####### 450k chip code
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PABLDZ-04A-03D_450k_L3.txt"
+PABLDZ_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PABLDZ_relapse_meth) <- c("Probe.Name", "PABLDZ_relapse", "Gene.Symbols", "Chromosome", "Position")
+PABLDZ_relapse_meth <- PABLDZ_relapse_meth %>% dplyr::select(Probe.Name, PABLDZ_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PABLDZ-09A-03D_450k_L3.txt"
+PABLDZ_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PABLDZ_diagnosis_meth) <- c("Probe.Name", "PABLDZ_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PABLDZ_diagnosis_meth <- PABLDZ_diagnosis_meth %>% dplyr::select(Probe.Name, PABLDZ_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAECCE-04A-02D_450k_L3.txt"
+PAECCE_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAECCE_relapse_meth) <- c("Probe.Name", "PAECCE_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAECCE_relapse_meth <- PAECCE_relapse_meth %>% dplyr::select(Probe.Name, PAECCE_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAECCE-09A-01D_450k_L3.txt"
+PAECCE_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAECCE_diagnosis_meth) <- c("Probe.Name", "PAECCE_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAECCE_diagnosis_meth <- PAECCE_diagnosis_meth %>% dplyr::select(Probe.Name, PAECCE_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAEIKD-04A-01D_450k_L3.txt"
+PAEIKD_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAEIKD_relapse_meth) <- c("Probe.Name", "PAEIKD_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAEIKD_relapse_meth <- PAEIKD_relapse_meth %>% dplyr::select(Probe.Name, PAEIKD_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAEIKD-09A-01D_450k_L3.txt"
+PAEIKD_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAEIKD_diagnosis_meth) <- c("Probe.Name", "PAEIKD_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAEIKD_diagnosis_meth <- PAEIKD_diagnosis_meth %>% dplyr::select(Probe.Name, PAEIKD_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKERZ-04A-02D_450k_L3.txt"
+PAKERZ_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKERZ_relapse_meth) <- c("Probe.Name", "PAKERZ_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAKERZ_relapse_meth <- PAKERZ_relapse_meth %>% dplyr::select(Probe.Name, PAKERZ_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKERZ-09A-01D_450k_L3.txt"
+PAKERZ_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKERZ_diagnosis_meth) <- c("Probe.Name", "PAKERZ_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAKERZ_diagnosis_meth <- PAKERZ_diagnosis_meth %>% dplyr::select(Probe.Name, PAKERZ_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKIWK-04A-01D_450k_L3.txt"
+PAKIWK_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKIWK_relapse_meth) <- c("Probe.Name", "PAKIWK_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAKIWK_relapse_meth <- PAKIWK_relapse_meth %>% dplyr::select(Probe.Name, PAKIWK_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKIWK-09A-01D_450k_L3.txt"
+PAKIWK_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKIWK_diagnosis_meth) <- c("Probe.Name", "PAKIWK_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAKIWK_diagnosis_meth <- PAKIWK_diagnosis_meth %>% dplyr::select(Probe.Name, PAKIWK_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKTCX-04A-01D_450k_L3.txt"
+PAKTCX_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKTCX_relapse_meth) <- c("Probe.Name", "PAKTCX_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAKTCX_relapse_meth <- PAKTCX_relapse_meth %>% dplyr::select(Probe.Name, PAKTCX_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAKTCX-09A-02D_450k_L3.txt"
+PAKTCX_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAKTCX_diagnosis_meth) <- c("Probe.Name", "PAKTCX_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAKTCX_diagnosis_meth <- PAKTCX_diagnosis_meth %>% dplyr::select(Probe.Name, PAKTCX_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAMYAS-04A-01D_450k_L3.txt"
+PAMYAS_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAMYAS_relapse_meth) <- c("Probe.Name", "PAMYAS_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAMYAS_relapse_meth <- PAMYAS_relapse_meth %>% dplyr::select(Probe.Name, PAMYAS_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAMYAS-09A-02D_450k_L3.txt"
+PAMYAS_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAMYAS_diagnosis_meth) <- c("Probe.Name", "PAMYAS_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAMYAS_diagnosis_meth <- PAMYAS_diagnosis_meth %>% dplyr::select(Probe.Name, PAMYAS_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAPXRJ-04A-01D_450k_L3.txt"
+PAPXRJ_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAPXRJ_relapse_meth) <- c("Probe.Name", "PAPXRJ_relapse", "Gene.Symbols", "Chromosome", "Position")
+PAPXRJ_relapse_meth <- PAPXRJ_relapse_meth %>% dplyr::select(Probe.Name, PAPXRJ_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PAPXRJ-09A-03D_450k_L3.txt"
+PAPXRJ_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PAPXRJ_diagnosis_meth) <- c("Probe.Name", "PAPXRJ_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PAPXRJ_diagnosis_meth <- PAPXRJ_diagnosis_meth %>% dplyr::select(Probe.Name, PAPXRJ_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARBIU-04A-01D_450k_L3.txt"
+PARBIU_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARBIU_relapse_meth) <- c("Probe.Name", "PARBIU_relapse", "Gene.Symbols", "Chromosome", "Position")
+PARBIU_relapse_meth <- PARBIU_relapse_meth %>% dplyr::select(Probe.Name, PARBIU_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARBIU-09A-01D_450k_L3.txt"
+PARBIU_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARBIU_diagnosis_meth) <- c("Probe.Name", "PARBIU_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PARBIU_diagnosis_meth <- PARBIU_diagnosis_meth %>% dplyr::select(Probe.Name, PARBIU_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARYVW-04A-01D_450k_L3.txt"
+PARYVW_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARYVW_relapse_meth) <- c("Probe.Name", "PARYVW_relapse", "Gene.Symbols", "Chromosome", "Position")
+PARYVW_relapse_meth <- PARYVW_relapse_meth %>% dplyr::select(Probe.Name, PARYVW_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PARYVW-09A-01D_450k_L3.txt"
+PARYVW_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PARYVW_diagnosis_meth) <- c("Probe.Name", "PARYVW_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PARYVW_diagnosis_meth <- PARYVW_diagnosis_meth %>% dplyr::select(Probe.Name, PARYVW_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASPLU-04A-02D_450k_L3.txt"
+PASPLU_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASPLU_relapse_meth) <- c("Probe.Name", "PASPLU_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASPLU_relapse_meth <- PASPLU_relapse_meth %>% dplyr::select(Probe.Name, PASPLU_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASPLU-09A-01D_450k_L3.txt"
+PASPLU_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASPLU_diagnosis_meth) <- c("Probe.Name", "PASPLU_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASPLU_diagnosis_meth <- PASPLU_diagnosis_meth %>% dplyr::select(Probe.Name, PASPLU_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASVVS-04A-01D_450k_L3.txt"
+PASVVS_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASVVS_relapse_meth) <- c("Probe.Name", "PASVVS_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASVVS_relapse_meth <- PASVVS_relapse_meth %>% dplyr::select(Probe.Name, PASVVS_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASVVS-09A-01D_450k_L3.txt"
+PASVVS_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASVVS_diagnosis_meth) <- c("Probe.Name", "PASVVS_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASVVS_diagnosis_meth <- PASVVS_diagnosis_meth %>% dplyr::select(Probe.Name, PASVVS_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASVYA-04A-01D_450k_L3.txt"
+PASVYA_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASVYA_relapse_meth) <- c("Probe.Name", "PASVYA_relapse", "Gene.Symbols", "Chromosome", "Position")
+PASVYA_relapse_meth <- PASVYA_relapse_meth %>% dplyr::select(Probe.Name, PASVYA_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PASVYA-09A-01D_450k_L3.txt"
+PASVYA_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PASVYA_diagnosis_meth) <- c("Probe.Name", "PASVYA_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PASVYA_diagnosis_meth <- PASVYA_diagnosis_meth %>% dplyr::select(Probe.Name, PASVYA_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PATIAK-04A-01D_450k_L3.txt"
+PATIAK_relapse_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PATIAK_relapse_meth) <- c("Probe.Name", "PATIAK_relapse", "Gene.Symbols", "Chromosome", "Position")
+PATIAK_relapse_meth <- PATIAK_relapse_meth %>% dplyr::select(Probe.Name, PATIAK_relapse) %>% filter(Probe.Name %in% probes_27k)
+
+path <- "https://target-data.nci.nih.gov/Public/AML/methylation_array/L3/TARGET-20-PATIAK-09A-01D_450k_L3.txt"
+PATIAK_diagnosis_meth <- vroom::vroom(path, delim = "\t", skip = 1) 
+colnames(PATIAK_diagnosis_meth) <- c("Probe.Name", "PATIAK_diagnosis", "Gene.Symbols", "Chromosome", "Position")
+PATIAK_diagnosis_meth <- PATIAK_diagnosis_meth %>% dplyr::select(Probe.Name, PATIAK_diagnosis) %>% filter(Probe.Name %in% probes_27k)
+
+#use this to reduce the 27k sets further to match the new 450k sets
+probes_27k_reduced <- pull(PATIAK_diagnosis_meth %>% dplyr::select(Probe.Name))
+
+df_list_meth_1 <- list(PARDDY_relapse_meth,
+                     PARDDY_diagnosis_meth,
+                     PARFAL_relapse_meth,
+                     PARFAL_diagnosis_meth,
+                     PARUNX_relapse_meth,
+                     PARUNX_diagnosis_meth,
+                     PASGWH_relapse_meth,
+                     PASGWH_diagnosis_meth)
+
+df_list_meth_reduced_1 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_1)
+
+df_list_meth_2 <- list(PASHYZ_relapse_meth,
+                     PASHYZ_diagnosis_meth,
+                     PASWAJ_relapse_meth,
+                     PASWAJ_diagnosis_meth,
+                     PATDNN_relapse_meth,
+                     PATDNN_diagnosis_meth,
+                     PABLDZ_relapse_meth,
+                     PABLDZ_diagnosis_meth)
+
+df_list_meth_reduced_2 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_2)
+
+df_1.2 <- merge(df_list_meth_reduced_1, df_list_meth_reduced_2, by = "Probe.Name")
+
+                     
+df_list_meth_3 <- list(PAECCE_relapse_meth,
+                     PAECCE_diagnosis_meth,
+                     PAEIKD_relapse_meth,
+                     PAEIKD_diagnosis_meth,
+                     PAKERZ_relapse_meth,
+                     PAKERZ_diagnosis_meth,
+                     PAKIWK_relapse_meth,
+                     PAKIWK_diagnosis_meth)
+
+df_list_meth_reduced_3 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_3)
+
+df_1.3 <- merge(df_1.2, df_list_meth_3, by = "Probe.Name")
+
+
+df_list_meth_4 <- list(PAKTCX_relapse_meth,
+                     PAKTCX_diagnosis_meth,
+                     PAMYAS_relapse_meth,
+                     PAMYAS_diagnosis_meth,
+                     PAPXRJ_relapse_meth,
+                     PAPXRJ_diagnosis_meth,
+                     PARBIU_relapse_meth,
+                     PARBIU_diagnosis_meth)
+
+df_list_meth_reduced_4 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_4)
+
+df_1.4 <- merge(df_1.3, df_list_meth_4, by = "Probe.Name")
+
+
+df_list_meth_5 <- list(PARYVW_relapse_meth,
+                     PARYVW_diagnosis_meth,
+                     PASPLU_relapse_meth,
+                     PASPLU_diagnosis_meth)
+                     
+df_list_meth_reduced_5 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_5)
+
+df_1.5 <- merge(df_1.4, df_list_meth_5, by = "Probe.Name")
+
+df_list_meth_6 <- list(PASVVS_relapse_meth,
+                     PASVVS_diagnosis_meth,
+                     PASVYA_relapse_meth,
+                     PASVYA_diagnosis_meth)
+
+df_list_meth_reduced_6 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_6)
+
+df_1.6 <- merge(df_1.5, df_list_meth_6, by = "Probe.Name")
+
+
+,
+                     PATIAK_relapse_meth,
+                     PATIAK_diagnosis_meth)
+
+df_list_meth_reduced_5 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_5)
+
+tar_paired_meth <- merge(df_1.4, df_list_meth_5, by = "Probe.Name")
+
+df1 <- merge(PARDDY_relapse_meth, PARDDY_diagnosis_meth, by = "Probe.Name")
+df2 <- merge(df1, PARFAL_relapse_meth, by = "Probe.Name")
+df3 <- merge(df2, PARFAL_diagnosis_meth, by = "Probe.Name")
+df4 <- merge(df3, PARUNX_relapse_meth, by = "Probe.Name")
+df5 <- merge(df4, PARUNX_diagnosis_meth, by = "Probe.Name")
+df6 <- merge(df5, PASGWH_relapse_meth, by = "Probe.Name")
+df7 <- merge(df6, PASGWH_diagnosis_meth, by = "Probe.Name")
+df8 <- merge(df7, PASHYZ_relapse_meth, by = "Probe.Name")
+df9 <- merge(df8, PASHYZ_diagnosis_meth, by = "Probe.Name")
+df10 <- merge(df9, PASWAJ_relapse_meth, by = "Probe.Name")
+df11 <- merge(df10, PASWAJ_diagnosis_meth, by = "Probe.Name")
+df12 <- merge(df11, PATDNN_relapse_meth, by = "Probe.Name")
+
+
+
+  # then reduce to single df
+
+df_list_meth_1_reduced <- df_list_meth_1 %>% reduce(full_join, by = 'Probe.Name')
+
+df_list_meth_reduced_1 <- Reduce(function(x, y) merge(x, y, all=TRUE), df_list_meth_1)
+ 
+df_list_meth_reduced <- df_list_meth %>% reduce(inner_join, by = 'Probe.Name')
+
+
+# pivot longer and add phase column
+
+tar_paired_mirna <- df_list_mirna_reduced %>%
+  pivot_longer(cols = 2:43,
+               names_to = 'sample',
+               values_to = 'mirna') %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse'))
+
+write.csv(tar_paired_mirna, "~/Documents/R/pedcancer/tar_paired_mirna.csv")                   
+                     
+
+```
+
+```{r}
+
+# paired target aml relapse multiomic files
+
+target_paired_exp <- read.csv("~/Documents/R/pedcancer/tar_paired_exp.csv")
+target_paired_exp <- target_paired_exp %>% dplyr::select(-1)
+
+
+target_paired_mirna <- read.csv("~/Documents/R/pedcancer/tar_paired_mirna.csv")
+target_paired_mirna <- target_paired_mirna %>% dplyr::select(-1)
+
+
+```
+
+
+```{r}
+
+library(limma)
+tab <- getGeneKEGGLinks(species="hsa")
+tab$Symbol <- mapIds(org.Hs.eg.db, tab$GeneID,
+                       column="SYMBOL", keytype="ENTREZID")
+head(tab)
+
+head(getKEGGPathwayNames(species="hsa"))
+
+tab2 <- getKEGGPathwayNames(species="hsa")
+
+head(tab2)
+
+tab3 <- merge(tab, tab2, by = 'PathwayID')
+
+head(tab3)
+
+fa_metabolism_genes <- pull(tab3 %>%
+  filter(grepl('Fatty acid metabolism', Description)) %>%
+    dplyr::select(Symbol))
+
+deg_fa <- pull(tar_relapse_deg %>% filter(gene_id %in% fa_metabolism_genes) %>% dplyr::select(gene_id))
+
+tar_paired_exp_log2_final %>%
+  filter(gene_id %in% deg_fa) %>%
+  ggplot(mapping = aes(x = phase, y = expression)) + geom_boxplot() + facet_wrap(~gene_id)
+
+oxphos_metabolism_genes <- pull(tab3 %>%
+  filter(grepl('Oxidative phosphorylation', Description)) %>%
+    dplyr::select(Symbol))
+
+tab3 %>% group_by(Description) %>% summarise()
+
+
+```
+
+
+```{r}
+
+# umap of oxphos
+
+# tar_paired_exp_log2_final <- read.csv("~/Documents/R/pedcancer/tar_paired_exp_log2_final.csv")
+
+umap_data_oxphos <- tar_paired_exp_log2_final %>%
+  unite(sample, id:phase, remove = TRUE) %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse')) %>%
+  dplyr::select(-phase) %>%
+  pivot_wider(names_from = sample,
+              values_from = expression) %>%
+    unnest() %>%
+  filter(gene_id %in% oxphos_metabolism_genes)
+
+umap_data_oxphos <- na.omit(umap_data_oxphos)
+
+umap_data_oxphos <- umap_data_oxphos %>% column_to_rownames('gene_id') %>%
+  t() %>%
+  as.data.frame()
+
+umap_data_oxphos %>% head()
+
+
+umap_relapse_oxphos <- umap(umap_data_oxphos)
+
+umap_relapse_oxphos_df <- as.data.frame(umap_relapse_oxphos$layout) %>% 
+  rownames_to_column('sample') %>%
+  mutate(phase = ifelse(grepl('diagnosis', sample), 'diagnosis', 'relapse'))
+
+umap_relapse_oxphos_df %>%
+  ggplot(mapping = aes(x = V1, y = V2)) + geom_point() + 
+  geom_point(mapping = aes(color = phase))
+
+```
+
+```{r}
+
+target_combined_risk <- target_combined %>%
+  mutate(cytogenetic_group = ifelse(grepl('RUNX1', Gene.Fusion) | grepl('CBFB', Gene.Fusion), 'Favorable',
+                            ifelse(grepl('KMT2A-MLLT10', Gene.Fusion) | 
+                                     grepl('KMT2A-MLLT4', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT2', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT1', Gene.Fusion) |
+                                     grepl('NUP98', Gene.Fusion) | 
+                                     grepl('DEK', Gene.Fusion) |
+                                     grepl('CBFA2T3', Gene.Fusion) |
+                                     grepl('MLLT10', Gene.Fusion) |
+                                     grepl('NPM1', Gene.Fusion) |
+                                     grepl('ETV6', Gene.Fusion), 'Unfavorable', 'Other')))
+
+
+target_combined_risk %>%
+  filter(clust != 'Cluster 0') %>%
+  ggplot(mapping = aes(x = X1, y = X2, color = cytogenetic_group)) + 
+  geom_point() +
+  geom_text(mapping = aes(label = clust), nudge_x = 0.8)
+
+target_combined_risk %>%
+    filter(clust != 'Cluster 0') %>%
+  ggplot(mapping = aes(x = clust, y = Overall.Survival.Time.in.Days, color = cytogenetic_group)) + 
+  geom_jitter() +
+  geom_boxplot(mapping = aes(color = cytogenetic_group), alpha = 0.4) +
+  theme_light()
+```
+
+```{r}
+
+#crispr screen analysis
+
+screen_df <- read.csv("~/Documents/R/MAGeCK_TTFAvsDMSO_time_integrated_gene_summaries.csv")
+
+screen_df %>% arrange(desc(`THvsDH.beta`)) %>% view()
+
+screen_med <- pull(screen_df %>% summarise(median(`THvsDH.beta`)))
+screen_sd <- pull(screen_df %>% summarise(sd(`THvsDH.beta`)))
+
+screen_df %>% ggplot(mapping = aes(x = fct_reorder(Gene, `THvsDH.beta`), y = `THvsDH.beta`)) + 
+  geom_point(alpha = 0.5) +
+  theme(axis.text.x = element_blank()) +
+  geom_point(data = screen_df %>% filter(Gene %in% mitogenes), 
+             mapping = aes(x = fct_reorder(Gene, `THvsDH.beta`), y = `THvsDH.beta`), color = 'red')
+
+screen_df %>% filter(Gene %in% mitogenes,
+                     `THvsDH.beta` >= screen_med+2*screen_sd) %>%
+               arrange(desc(`THvsDH.beta`))
+              
+
+```
+
+```{r}
+
+umap <- readRDS("~/Documents/R/pedcancer/xxx_derek.Rds")
+umap2 <- readRDS("~/Documents/R/pedcancer/yyy.Rds") %>% rownames_to_column('id')
+umap_optimized <- readRDS("~/Documents/R/pedcancer/optimized_ubmi_factors.Rds")
+
+umap_clinical <- merge(umap_optimized, target_discovery_clinical_3, by.x = 'sample', by.y = 'sample') %>%
+    mutate(relapse_time = ifelse(Event.Free.Survival.Time.in.Days >= 365, 'Late Relapse', 'Early Relapse')) %>%
+  mutate(flt3 = ifelse(grepl('No', FLT3.ITD.positive.) &
+                         grepl('No', FLT3.PM) |
+                         grepl('NO', FLT3.ITD.positive.) &
+                         grepl('No', FLT3.PM) |
+                          grepl('NO', FLT3.ITD.positive.) &
+                         grepl('NO', FLT3.PM) |
+                         grepl('No', FLT3.ITD.positive.) &
+                         grepl('NO', FLT3.PM), '0', '1')) %>%
+  mutate(cebpa = ifelse(grepl('Yes', CEBPA.mutation), '1', '0')) %>%
+  mutate(npm = ifelse(grepl('Yes', NPM.mutation), '1', '0')) %>%
+  mutate(karyotype = ifelse(Primary.Cytogenetic.Code == 'Normal', 'normal', 'abnormal')) %>%
+  mutate(cytogenetic_risk = ifelse(grepl('RUNX1', Gene.Fusion) | 
+                                    grepl('CBFB', Gene.Fusion), 'Favorable',
+                                   ifelse(grepl('KMT2A-MLLT10', Gene.Fusion) | 
+                                     grepl('KMT2A-MLLT4', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT2', Gene.Fusion) |
+                                     grepl('KMT2A-MLLT1', Gene.Fusion) |
+                                     grepl('NUP98', Gene.Fusion) | 
+                                     grepl('DEK', Gene.Fusion) |
+                                     grepl('CBFA2T3-', Gene.Fusion) |
+                                     grepl('MLLT10', Gene.Fusion) |
+                                     grepl('NPM1', Gene.Fusion) |
+                                     grepl('ETV6', Gene.Fusion) |
+                                     grepl('Yes', monosomy.7) |
+                                     grepl('Yes', monosomy.5), 'Unfavorable', 'Other'))) %>% 
+  mutate(mrd1_status = ifelse(grepl('Yes', MRD.at.end.of.course.1), '1', '0')) %>% 
+  mutate(risk_group = ifelse(cytogenetic_risk == 'Unfavorable' |
+                             cytogenetic_risk == 'Other' & flt3 == '1' |
+                             cytogenetic_risk == 'Favorable' & flt3 == '1' & cebpa == '0' |
+                             cytogenetic_risk == 'Favorable' & mrd1_status == '1', 'HR',
+                      ifelse(cytogenetic_risk == 'Favorable' & flt3 == '0' & mrd1_status == '0' |
+                             cytogenetic_risk == 'Favorable' | cytogenetic_risk == 'Other' & karyotype == 'normal' & cebpa == '1' |
+                             cytogenetic_risk == 'Favorable' | cytogenetic_risk == 'Other' & karyotype == 'normal' & npm == '1', 'LR1', 'LR2'))) %>%
+  mutate(cluster = ifelse(clust == '1', 'Cluster 1', 
+                          ifelse(clust == '2', 'Cluster 2', 
+                                 ifelse(clust == '3', 'Cluster 3', 
+                                        ifelse(clust == '4', 'Cluster 4', 
+                                               ifelse(clust == '5', 'Cluster 5', 
+                                                      ifelse(clust == '6', 'Cluster 6', 
+                                                             ifelse(clust == '7', 'Cluster 7',
+                                                                    ifelse(clust == '8', 'Cluster 8', 'Cluster 9')))))))))
+
+
+umap_optimized_clinical <- umap_clinical %>%
+  dplyr::select(sample,
+                clust,
+                cluster,
+                Gene.Fusion,
+                Primary.Cytogenetic.Code,
+                cytogenetic_risk, 
+                flt3,
+                FLT3.ITD.allelic.ratio,
+                cebpa,
+                npm,
+                mrd1_status,
+                Risk.group,
+                risk_group)
+
+saveRDS(umap_optimized_clinical, file = "~/Documents/R/pedcancer/umap_optimized_clinical.Rds")
+
+umap_clinical %>% 
+  ggplot(mapping = aes(x = UMAP1, y = UMAP2, color = cluster, shape = risk_group)) +
+  geom_point(size = 3) +
+  theme_light() + 
+    theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 14, color = "black"))
+
+umap_clinical %>%
+  group_by(cluster, cytogenetic_group) %>%
+  summarise(length(cytogenetic_group))
+
+umap_clinical %>%
+  group_by(cluster) %>%
+  ggplot(mapping = aes(x = Overall.Survival.Time.in.Days, y = cluster, color = cluster)) + 
+  geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_violin(alpha = 0.4) +
+  facet_wrap(~risk_group) +
+  theme_light() +
+  xlab("Overall Survival (days)") +
+  ylab("") +
+    theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 14, color = "black"),
+        strip.text.x = element_text(family = 'Arial', size = 12, color = 'white'))
+
+umap_clinical %>%
+  group_by(cluster) %>%
+  ggplot(mapping = aes(x = Event.Free.Survival.Time.in.Days, y = cluster, color = cluster)) + 
+  geom_jitter(position = position_dodge(width = 0.75)) +
+  geom_violin(alpha = 0.4) +
+  facet_wrap(~risk_group) +
+  theme_light() +
+  xlab("Event Free Survival (days)") +
+  ylab("") +
+  theme(axis.title.x = element_text(family = "Arial", size = 14, color = 'black'),
+        axis.text.x = element_text(family = "Arial", size = 14, color = "black"),
+        axis.title.y = element_text(family = "Arial", size = 16, color = 'black'),
+        axis.text.y = element_text(family = "Arial", size = 12, color = "black"),
+        strip.text.x = element_text(family = 'Arial', size = 12, color = 'white'))
+
+  
+```
+
